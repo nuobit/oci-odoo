@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: odoo-shell <database> [extra odoo args...]" >&2
+    exit 2
+fi
+
+database="$1"
+shift
+
+exec odoo-run shell -d "${database}" "$@"

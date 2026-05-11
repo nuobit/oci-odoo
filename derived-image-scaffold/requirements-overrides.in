@@ -1,0 +1,12 @@
+# Explicit Python requirement overrides for this deployment image.
+#
+# Use this file only when two or more active direct requirements request the
+# same package incompatibly and a human has decided the exact replacement line.
+# The normalizer removes the conflicting active lines and writes this selected
+# line into the effective pip-compile input.
+#
+# Do not use this as a casual pinning file. Prefer requirements.in for selected
+# extra packages and requirements-constraints.in for compatibility bounds.
+#
+# Example:
+# idna==3.4

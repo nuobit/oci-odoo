@@ -1,0 +1,7 @@
+# Debian packages needed only while building this derived image.
+# One package per line. Blank lines and comments are ignored.
+#
+# Examples:
+# pkg-config
+# default-libmysqlclient-dev
+# libcups2-dev

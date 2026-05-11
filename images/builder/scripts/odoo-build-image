@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: odoo-build-image <repos.lock.yaml> <requirements.lock.txt> [src-dir] [--requirement requirements.in ...] [--constraint requirements-constraints.in ...] [--overrides requirements-overrides.in] [--refresh-requirements-lock]" >&2
+    exit 2
+fi
+
+repos_lock="$(realpath "$1")"
+requirements_lock="$(realpath -m "$2")"
+shift 2
+
+src_dir="${ODOO_SRC:-/opt/odoo/src}"
+extra_requirements=()
+constraints=()
+overrides=""
+refresh_requirements_lock=0
+
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    src_dir="$1"
+    shift
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -r|--requirement)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a file argument" >&2
+                exit 2
+            fi
+            extra_requirements+=("$(realpath "$2")")
+            shift 2
+            ;;
+        -c|--constraint)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a file argument" >&2
+                exit 2
+            fi
+            constraints+=("$(realpath "$2")")
+            shift 2
+            ;;
+        --overrides)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a file argument" >&2
+                exit 2
+            fi
+            overrides="$(realpath "$2")"
+            shift 2
+            ;;
+        --refresh-requirements-lock)
+            refresh_requirements_lock=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+odoo_bin="${src_dir}/odoo/odoo-bin"
+odoo_requirements="${src_dir}/odoo/requirements.txt"
+odoo_venv="${ODOO_VENV:-/opt/odoo/venv}"
+addons_path_file="${ODOO_ADDONS_PATH_FILE:-/etc/odoo/addons_path}"
+
+if [[ ! -f "${repos_lock}" ]]; then
+    echo "Repository lock file not found: ${repos_lock}" >&2
+    exit 2
+fi
+
+for file in "${extra_requirements[@]}" "${constraints[@]}"; do
+    if [[ ! -f "${file}" ]]; then
+        echo "Requirements input file not found: ${file}" >&2
+        exit 2
+    fi
+done
+
+if [[ -n "${overrides}" && ! -f "${overrides}" ]]; then
+    echo "Requirements overrides input not found: ${overrides}" >&2
+    exit 2
+fi
+
+configure_git_credentials() {
+    export GIT_TERMINAL_PROMPT=0
+
+    if [[ -f /run/secrets/git-credentials ]]; then
+        git config --global --unset-all credential.helper >/dev/null 2>&1 || true
+        git config --global credential.helper \
+            '!f() { case "$1" in get) git credential-store --file=/run/secrets/git-credentials get ;; store|erase) cat >/dev/null ;; *) cat >/dev/null ;; esac; }; f'
+    fi
+}
+
+cleanup_git_credentials() {
+    if [[ -f /run/secrets/git-credentials ]]; then
+        git config --global --unset-all credential.helper >/dev/null 2>&1 || true
+    fi
+}
+
+mkdir -p "${src_dir}"
+cd "${src_dir}"
+
+configure_git_credentials
+trap cleanup_git_credentials EXIT
+gitaggregate -c "${repos_lock}"
+cleanup_git_credentials
+trap - EXIT
+
+if [[ ! -f "${odoo_bin}" ]]; then
+    echo "Odoo binary not found after source build: ${odoo_bin}" >&2
+    exit 1
+fi
+
+if [[ ! -f "${odoo_requirements}" ]]; then
+    echo "Odoo requirements file not found after source build: ${odoo_requirements}" >&2
+    exit 1
+fi
+
+odoo-generate-addons-path "${repos_lock}" "${src_dir}" "${addons_path_file}"
+
+python_env_args=()
+for requirement in "${extra_requirements[@]}"; do
+    python_env_args+=(--requirement "${requirement}")
+done
+for constraint in "${constraints[@]}"; do
+    python_env_args+=(--constraint "${constraint}")
+done
+if [[ -n "${overrides}" ]]; then
+    python_env_args+=(--overrides "${overrides}")
+fi
+if [[ "${refresh_requirements_lock}" -eq 1 ]]; then
+    python_env_args+=(--refresh-requirements-lock)
+fi
+
+odoo-build-python-env \
+    "${odoo_requirements}" \
+    "${requirements_lock}" \
+    "${odoo_venv}" \
+    "${python_env_args[@]}"
+
+"${odoo_venv}/bin/python" "${odoo_bin}" --version
+
+find "${src_dir}" -name .git -type d -prune -exec rm -rf {} +
+find "${src_dir}" -name __pycache__ -type d -prune -exec rm -rf {} +

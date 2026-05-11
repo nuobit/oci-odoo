@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve and pin a base image digest from Docker Hub.
+#
+# The script name is generic because the concept is generic: update the pinned
+# base image digest. The current resolver is intentionally not generic. Docker
+# Hub's registry API endpoint, auth endpoint, and `/v2/...` manifest path are one
+# coupled implementation. If another registry is needed later, add a dedicated
+# resolver/mode instead of partially parameterizing this URL.
+
+dockerfile="${DOCKERFILE:-images/runtime/Dockerfile}"
+registry="docker.io"
+repository="${BASE_IMAGE_REPOSITORY:-library/python}"
+tag="${BASE_IMAGE_TAG:-3.10.20-slim-trixie}"
+human_ref="${registry}/${repository}:${tag}"
+observed_on="$(date -u +%Y-%m-%d)"
+
+for command in curl jq awk mktemp mv; do
+    if ! command -v "${command}" >/dev/null 2>&1; then
+        echo "Missing required command: ${command}" >&2
+        exit 127
+    fi
+done
+
+if [[ ! -f "${dockerfile}" ]]; then
+    echo "Dockerfile not found: ${dockerfile}" >&2
+    exit 2
+fi
+
+token="$(
+    curl -fsSL \
+        "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull" \
+        | jq -r .token
+)"
+
+headers="$(
+    curl -fsSI \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+        "https://registry-1.docker.io/v2/${repository}/manifests/${tag}"
+)"
+
+digest="$(
+    printf '%s\n' "${headers}" \
+        | awk 'BEGIN{IGNORECASE=1} /^docker-content-digest:/ {gsub("\r",""); print $2; exit}'
+)"
+
+if [[ -z "${digest}" ]]; then
+    echo "Could not resolve digest for ${human_ref}" >&2
+    exit 1
+fi
+
+tmp="$(mktemp)"
+mode="$(stat -c %a "${dockerfile}")"
+{
+    cat <<EOF
+# syntax=docker/dockerfile:1.7
+
+# Human reference observed on ${observed_on} when selecting this base:
+#   ${human_ref}
+#
+# This tag is intentionally NOT used in FROM because upstream tags are mutable:
+# the upstream registry may retarget this tag to a different digest at any time.
+# The tag/digest relation above is only an observation at selection time; it is
+# not a guarantee that the tag will keep pointing to this digest.
+# Docker documents this under "Pin base image versions":
+# https://docs.docker.com/develop/develop-images/dockerfile_best-practices/#pin-base-image-versions
+# The digest below is the immutable identity we actually build from.
+FROM ${registry}/${repository}@${digest}
+EOF
+    awk '
+        BEGIN { skipping = 1 }
+        skipping && /^FROM / { skipping = 0; next }
+        !skipping { print }
+    ' "${dockerfile}"
+} > "${tmp}"
+
+chmod "${mode}" "${tmp}"
+mv "${tmp}" "${dockerfile}"
+
+echo "Updated ${dockerfile}: ${human_ref} -> ${digest}"

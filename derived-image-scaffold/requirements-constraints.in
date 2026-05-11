@@ -1,0 +1,18 @@
+# Human Python dependency constraints for a deployment image.
+#
+# This file does not install packages. It only limits versions of packages that
+# Odoo, requirements.in, or transitive dependencies already request.
+#
+# Keep this file empty unless the dependency resolver needs an explicit
+# compatibility decision that cannot be expressed upstream immediately.
+#
+# If a selected addon needs an extra Python package, put that package in
+# requirements.in instead. Pin it there when the direct requirement itself needs
+# a known compatible version.
+#
+# Do not edit requirements.lock.txt by hand. Add the smallest compatible bound
+# here, regenerate requirements.lock.txt, then review the diff.
+#
+# Examples:
+# some-lib<4
+# urllib3==1.26.5

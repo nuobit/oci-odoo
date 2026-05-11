@@ -1,0 +1,16 @@
+# Human-selected extra Python packages for a deployment image.
+#
+# Odoo's own src/odoo/requirements.txt is always included automatically when
+# generating requirements.lock.txt. Do not copy full OCA/provider repository
+# requirements.txt files here just because the repository is present.
+#
+# Add only the extra Python packages actually needed by the selected addons in
+# this image. Pin the version here when the addon needs a known compatible
+# version.
+#
+# This file installs packages. requirements-constraints.in does not install
+# anything; it only limits versions of packages requested elsewhere.
+#
+# Examples:
+# phonenumbers==8.13.47
+# openpyxl==3.1.5

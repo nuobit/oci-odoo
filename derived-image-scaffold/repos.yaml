@@ -1,0 +1,36 @@
+# Source-of-truth repository selection for an Odoo deployment image based on
+# oci-odoo.
+#
+# Format: git-aggregate repos.yaml.
+# Official reference: https://github.com/acsone/git-aggregator
+#
+# This file says what source repositories should be included in the deployable
+# image. Exact commits are generated into repos.lock.yaml by lock-repos.
+# Existing folders in a build tree must not add or remove repositories here.
+#
+# Keep sections in the same order as the final source tree and keep
+# repositories alphabetically ordered inside each section.
+
+# Odoo repositories
+./odoo:
+  remotes:
+    odoo: https://github.com/odoo/odoo.git
+  target:
+    odoo 17.0
+  merges:
+    - odoo 17.0
+
+# OCA repositories
+# Example OCA repository. Keep it commented in the scaffold: enable only when
+# the deployable image really needs modules from this repository.
+# ./addons/oca/web:
+#   remotes:
+#     oca: https://github.com/OCA/web.git
+#   target:
+#     oca 17.0
+#   merges:
+#     - oca 17.0
+#
+# Deployment-owner repositories
+#
+# Third-party repositories

@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Generate a deterministic Odoo addons_path from locked sources.
+
+repos.lock.yaml is the source of truth for repository membership. The
+materialized source tree is used only to validate that those locked repositories
+exist and contain Odoo addon roots.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import yaml
+
+
+SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    "__pycache__",
+    "node_modules",
+}
+
+
+def has_manifest(path: Path) -> bool:
+    return (path / "__manifest__.py").is_file() or (path / "__openerp__.py").is_file()
+
+
+def has_direct_modules(path: Path) -> bool:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    return any(child.is_dir() and has_manifest(child) for child in children)
+
+
+def normalize_repo_key(raw: object) -> Path:
+    if not isinstance(raw, str):
+        raise ValueError(f"repository key is not a string: {raw!r}")
+
+    path = Path(raw)
+    if path.is_absolute():
+        raise ValueError(f"repository key must be relative: {raw}")
+
+    parts = [part for part in path.parts if part not in ("", ".")]
+    if not parts:
+        raise ValueError(f"repository key must not be empty: {raw}")
+    if any(part == ".." for part in parts):
+        raise ValueError(f"repository key must not contain '..': {raw}")
+
+    return Path(*parts)
+
+
+def load_repo_paths(repos_lock: Path) -> list[Path]:
+    with repos_lock.open("r", encoding="utf-8") as stream:
+        data = yaml.safe_load(stream) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError(f"repository lock must be a YAML mapping: {repos_lock}")
+
+    return [normalize_repo_key(key) for key in data.keys()]
+
+
+def discover_addons_roots(repo_dir: Path, max_depth: int = 4) -> list[Path]:
+    # Preferred layout for non-Odoo repos: repo_dir itself is an addon root.
+    # Single-module or nested-root discovery is kept for compatibility.
+    roots: list[Path] = []
+
+    def visit(path: Path, depth: int) -> None:
+        if path.name in SKIP_DIRS:
+            return
+        if has_direct_modules(path):
+            roots.append(path)
+            return
+        if depth >= max_depth:
+            return
+        try:
+            children = sorted(child for child in path.iterdir() if child.is_dir())
+        except OSError:
+            return
+        for child in children:
+            visit(child, depth + 1)
+
+    if has_manifest(repo_dir):
+        roots.append(repo_dir.parent)
+    else:
+        visit(repo_dir, 0)
+
+    return roots
+
+
+def odoo_core_roots(repo_dir: Path) -> list[Path]:
+    # Odoo only builds both default addon roots when addons_path is empty.
+    # With an explicit addons_path it preserves the provided list, while later
+    # module loading only guarantees the core root. Keep both roots explicit
+    # here so the final runtime config is deterministic.
+    candidates = [
+        repo_dir / "odoo" / "addons",
+        repo_dir / "addons",
+    ]
+    roots = [path for path in candidates if path.is_dir() and has_direct_modules(path)]
+    if not roots:
+        raise ValueError(f"Odoo core addon roots not found under {repo_dir}")
+    return roots
+
+
+def add_unique(paths: list[Path], seen: set[Path], candidates: list[Path]) -> None:
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            paths.append(resolved)
+
+
+def validate_no_duplicate_modules(addons_paths: list[Path]) -> None:
+    # Odoo resolves duplicate module technical names by first path match. Treat
+    # that as an invalid image build instead of relying on silent shadowing.
+    modules: dict[str, list[Path]] = {}
+
+    for addons_path in addons_paths:
+        for child in sorted(path for path in addons_path.iterdir() if path.is_dir()):
+            if has_manifest(child):
+                modules.setdefault(child.name, []).append(child)
+
+    duplicates = {name: paths for name, paths in modules.items() if len(paths) > 1}
+    if not duplicates:
+        return
+
+    lines = ["Duplicate Odoo module names detected in generated addons_path:"]
+    for name, paths in sorted(duplicates.items()):
+        lines.append(f"  {name}:")
+        for path in paths:
+            lines.append(f"    {path}")
+    raise ValueError("\n".join(lines))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("repos_lock", type=Path)
+    parser.add_argument("src_dir", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
+
+    repos_lock = args.repos_lock.resolve()
+    src_dir = args.src_dir.resolve()
+    output = args.output
+
+    if not repos_lock.is_file():
+        print(f"Repository lock file not found: {repos_lock}", file=sys.stderr)
+        return 2
+    if not src_dir.is_dir():
+        print(f"Source directory not found: {src_dir}", file=sys.stderr)
+        return 2
+
+    addons_paths: list[Path] = []
+    seen: set[Path] = set()
+
+    try:
+        repo_paths = load_repo_paths(repos_lock)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    for rel_path in repo_paths:
+        repo_dir = src_dir / rel_path
+        if not repo_dir.is_dir():
+            print(f"Locked repository was not materialized: {rel_path}", file=sys.stderr)
+            return 1
+
+        if rel_path.as_posix() == "odoo":
+            roots = odoo_core_roots(repo_dir)
+        else:
+            roots = discover_addons_roots(repo_dir)
+
+        if not roots:
+            print(
+                "Locked repository has no detectable Odoo addon root; "
+                f"using repository path in addons_path: {rel_path}",
+                file=sys.stderr,
+            )
+            roots = [repo_dir]
+
+        add_unique(addons_paths, seen, roots)
+
+    try:
+        validate_no_duplicate_modules(addons_paths)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(",".join(str(path) for path in addons_paths) + "\n", encoding="utf-8")
+
+    print(f"Generated addons_path with {len(addons_paths)} entries: {output}")
+    for path in addons_paths:
+        print(f"  {path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

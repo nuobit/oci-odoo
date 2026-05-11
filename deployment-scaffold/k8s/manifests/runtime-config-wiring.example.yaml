@@ -1,0 +1,94 @@
+# Example only. Copy/adapt this into a client deployment repo.
+#
+# This file documents the agreed runtime-config wiring:
+#
+# - non-secret odoo.conf comes from a ConfigMap;
+# - db_password/admin_passwd come from Kubernetes Secret files;
+# - /run/odoo is per-Pod volatile state;
+# - /run/odoo must be owned by the odoo user before odoo-run writes
+#   /run/odoo/odoo-runtime.conf.
+#
+# It is not a complete production manifest. Services, Ingresses, PVC names,
+# resource requests/limits, probes, affinity, backup Jobs, and instance-specific
+# labels belong to the concrete deployment repository.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo-<instance>
+  labels:
+    app.kubernetes.io/name: odoo
+    app.kubernetes.io/instance: <instance>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: odoo
+      app.kubernetes.io/instance: <instance>
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: odoo
+        app.kubernetes.io/instance: <instance>
+    spec:
+      initContainers:
+        - name: prepare-odoo-run-dir
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - chown 1000:1000 /run/odoo && chmod 0700 /run/odoo
+          volumeMounts:
+            - name: odoo-run
+              mountPath: /run/odoo
+
+      containers:
+        - name: odoo
+          # Placeholder form:
+          #   ghcr.io/<owner>/<image-repo>:17.0-py310-trixie-r0001
+          # Concrete invented example:
+          #   ghcr.io/examplecorp/oci-odoo:17.0-py310-trixie-r0001
+          image: ghcr.io/<owner>/<image-repo>:17.0-py310-trixie-r0001
+          env:
+            - name: ODOO_BASE_CONFIG_FILE
+              value: /etc/odoo/base/odoo.conf
+            - name: ODOO_DB_PASSWORD_FILE
+              value: /run/secrets/odoo/db_password
+            - name: ODOO_ADMIN_PASSWD_FILE
+              value: /run/secrets/odoo/admin_passwd
+          ports:
+            - name: http
+              containerPort: 8069
+            - name: gevent
+              containerPort: 8072
+          volumeMounts:
+            - name: odoo-base-config
+              mountPath: /etc/odoo/base
+              readOnly: true
+            - name: odoo-secrets
+              mountPath: /run/secrets/odoo
+              readOnly: true
+            - name: odoo-run
+              mountPath: /run/odoo
+            - name: odoo-filestore
+              mountPath: /var/lib/odoo
+
+      volumes:
+        - name: odoo-base-config
+          configMap:
+            name: odoo-<instance>-config
+            items:
+              - key: odoo.conf
+                path: odoo.conf
+
+        - name: odoo-secrets
+          secret:
+            secretName: odoo-<instance>-secrets
+
+        - name: odoo-run
+          emptyDir:
+            medium: Memory
+
+        - name: odoo-filestore
+          persistentVolumeClaim:
+            claimName: odoo-<instance>-filestore

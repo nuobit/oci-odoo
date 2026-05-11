@@ -1,0 +1,6 @@
+# Debian packages needed by the final runtime image.
+# One package per line. Blank lines and comments are ignored.
+#
+# Examples:
+# libcups2
+# libzbar0

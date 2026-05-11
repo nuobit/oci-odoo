@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: odoo-update <database> <modules|all> [extra odoo args...]" >&2
+    exit 2
+fi
+
+database="$1"
+modules="$2"
+shift 2
+
+exec odoo-run -d "${database}" -u "${modules}" --stop-after-init "$@"

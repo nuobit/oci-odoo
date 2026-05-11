@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.7
+
+# Temporary source-build image for this derived Odoo image.
+# It is not deployed. It exists so gitaggregate runs exactly once for a
+# release candidate while still allowing requirements.lock.txt extraction.
+ARG ODOO_BUILDER_IMAGE=ghcr.io/nuobit/oci-odoo-builder:17.0-py310-trixie-r0001
+ARG REFRESH_REQUIREMENTS_LOCK=0
+
+FROM ${ODOO_BUILDER_IMAGE}
+ARG REFRESH_REQUIREMENTS_LOCK
+
+COPY system-build-packages.txt /tmp/system-build-packages.txt
+COPY repos.lock.yaml /tmp/repos.lock.yaml
+COPY requirements.in /tmp/requirements.in
+COPY requirements-constraints.in /tmp/requirements-constraints.in
+COPY requirements-overrides.in /tmp/requirements-overrides.in
+COPY requirements.lock.txt /tmp/requirements.lock.txt
+
+RUN set -eu; \
+    packages="$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' /tmp/system-build-packages.txt)"; \
+    if [ -n "${packages}" ]; then \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${packages}; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN --mount=type=secret,id=git_credentials,target=/run/secrets/git-credentials,required=false \
+    set -eu; \
+    refresh_arg=""; \
+    if [ "${REFRESH_REQUIREMENTS_LOCK}" = "1" ]; then \
+        refresh_arg="--refresh-requirements-lock"; \
+    fi; \
+    odoo-build-image /tmp/repos.lock.yaml /tmp/requirements.lock.txt \
+        --requirement /tmp/requirements.in \
+        --constraint /tmp/requirements-constraints.in \
+        --overrides /tmp/requirements-overrides.in \
+        ${refresh_arg}

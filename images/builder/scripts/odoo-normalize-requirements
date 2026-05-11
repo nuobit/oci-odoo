@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Normalize requirements for a concrete build environment.
+
+This proof of concept intentionally separates responsibilities:
+
+- pip-requirements-parser reads pip requirements files and options.
+- packaging evaluates PEP 508 requirements and environment markers.
+- pip-compile remains the dependency resolver.
+
+The script expands `-r` includes, drops lines whose markers are inactive for the
+target environment, applies explicit operator overrides to active requirements,
+and writes both an effective input file for pip-compile and a diagnostic report.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from packaging.markers import default_environment
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from pip_requirements_parser import RequirementsFile
+
+
+@dataclass(frozen=True)
+class RequirementEntry:
+    line: str
+    path: Path
+    line_no: int
+    name: str | None
+    marker: str | None
+    active: bool
+    kind: str = "requirement"
+    note: str | None = None
+
+    @property
+    def location(self) -> str:
+        return f"{self.path}:{self.line_no}"
+
+
+@dataclass(frozen=True)
+class ParseNote:
+    path: Path
+    line_no: int
+    line: str
+    kind: str
+    message: str
+
+    @property
+    def location(self) -> str:
+        return f"{self.path}:{self.line_no}"
+
+
+def object_dict(obj: Any) -> dict[str, Any]:
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    return {}
+
+
+def requirement_line_data(obj: Any) -> tuple[int, str]:
+    requirement_line = getattr(obj, "requirement_line", None)
+    if requirement_line is None:
+        data = object_dict(obj).get("requirement_line", {})
+        return int(data.get("line_number", 0)), str(data.get("line", ""))
+    return (
+        int(getattr(requirement_line, "line_number", 0) or 0),
+        str(getattr(requirement_line, "line", "") or ""),
+    )
+
+
+def dumped_requirement(obj: Any) -> str:
+    if hasattr(obj, "dumps"):
+        return obj.dumps().strip()
+    return str(obj).strip()
+
+
+def marker_evaluate(marker: Any, env: dict[str, str]) -> bool:
+    try:
+        return marker.evaluate(environment=env, context="requirement")
+    except TypeError:
+        return marker.evaluate(environment=env)
+
+
+def build_environment(args: argparse.Namespace) -> dict[str, str]:
+    env = default_environment()
+    overrides = {
+        "python_version": args.python_version,
+        "python_full_version": args.python_full_version,
+        "sys_platform": args.sys_platform,
+        "os_name": args.os_name,
+        "platform_system": args.platform_system,
+        "platform_machine": args.platform_machine,
+    }
+    env.update({key: value for key, value in overrides.items() if value})
+    return env
+
+
+def parse_requirement_object(obj: Any, path: Path, env: dict[str, str]) -> RequirementEntry:
+    line_no, raw_line = requirement_line_data(obj)
+    line = dumped_requirement(obj)
+    data = object_dict(obj)
+
+    try:
+        requirement = Requirement(line)
+    except InvalidRequirement:
+        name = data.get("name")
+        return RequirementEntry(
+            line=line,
+            path=path,
+            line_no=line_no,
+            name=canonicalize_name(name) if name else None,
+            marker=data.get("marker"),
+            active=True,
+            kind=type(obj).__name__,
+            note=f"not parsed by packaging; original line: {raw_line}",
+        )
+
+    marker = str(requirement.marker) if requirement.marker else None
+    active = True if requirement.marker is None else marker_evaluate(requirement.marker, env)
+    return RequirementEntry(
+        line=line,
+        path=path,
+        line_no=line_no,
+        name=canonicalize_name(requirement.name),
+        marker=marker,
+        active=active,
+        kind=type(obj).__name__,
+    )
+
+
+def option_data(option: Any) -> tuple[int, str, dict[str, Any]]:
+    line_no, raw_line = requirement_line_data(option)
+    return line_no, raw_line, dict(getattr(option, "options", {}) or {})
+
+
+def read_requirements_tree(
+    path: Path,
+    env: dict[str, str],
+    *,
+    seen: set[Path] | None = None,
+) -> tuple[list[RequirementEntry], list[ParseNote], list[Path]]:
+    path = path.resolve()
+    if seen is None:
+        seen = set()
+    if path in seen:
+        return [], [ParseNote(path, 0, "", "include", "already included; skipped")], []
+    seen.add(path)
+
+    rf = RequirementsFile.from_file(str(path))
+    entries: list[RequirementEntry] = []
+    notes: list[ParseNote] = []
+    included_files = [path]
+
+    for invalid in getattr(rf, "invalid_lines", []):
+        line_no, raw_line = requirement_line_data(invalid)
+        message = getattr(invalid, "error_message", str(invalid))
+        notes.append(ParseNote(path, line_no, raw_line, "invalid", message))
+
+    events: list[tuple[int, int, str, Any]] = []
+    for index, option in enumerate(rf.options):
+        line_no, _raw_line, _options = option_data(option)
+        events.append((line_no, index, "option", option))
+    for index, requirement in enumerate(rf.requirements):
+        line_no, _raw_line = requirement_line_data(requirement)
+        events.append((line_no, index, "requirement", requirement))
+
+    for _line_no, _index, kind, item in sorted(events, key=lambda value: (value[0], value[1])):
+        if kind == "requirement":
+            entries.append(parse_requirement_object(item, path, env))
+            continue
+
+        line_no, raw_line, options = option_data(item)
+        requirement_paths = options.get("requirements") or []
+        constraint_paths = options.get("constraints") or []
+
+        for requirement_path in requirement_paths:
+            child = (path.parent / requirement_path).resolve()
+            child_entries, child_notes, child_included = read_requirements_tree(
+                child,
+                env,
+                seen=seen,
+            )
+            entries.extend(child_entries)
+            notes.extend(child_notes)
+            included_files.extend(child_included)
+
+        for constraint_path in constraint_paths:
+            notes.append(
+                ParseNote(
+                    path,
+                    line_no,
+                    raw_line,
+                    "constraint-option",
+                    f"constraint file referenced but not expanded here: {constraint_path}",
+                )
+            )
+
+        other_options = {
+            key: value
+            for key, value in options.items()
+            if key not in {"requirements", "constraints"} and value not in (None, [], False)
+        }
+        if other_options:
+            notes.append(
+                ParseNote(
+                    path,
+                    line_no,
+                    raw_line,
+                    "pip-option",
+                    f"pip option preserved for report only: {other_options}",
+                )
+            )
+
+    return entries, notes, included_files
+
+
+def group_by_name(entries: list[RequirementEntry]) -> dict[str, list[RequirementEntry]]:
+    grouped: dict[str, list[RequirementEntry]] = {}
+    for entry in entries:
+        if entry.name:
+            grouped.setdefault(entry.name, []).append(entry)
+    return grouped
+
+
+def read_overrides(path: Path, env: dict[str, str]) -> tuple[dict[str, RequirementEntry], list[RequirementEntry], list[ParseNote]]:
+    if not path.exists():
+        return {}, [], []
+    entries, notes, _included = read_requirements_tree(path, env)
+    overrides: dict[str, RequirementEntry] = {}
+    inactive: list[RequirementEntry] = []
+
+    for entry in entries:
+        if entry.name is None:
+            raise SystemExit(f"{entry.location}: override has no package name: {entry.line}")
+        if not entry.active:
+            inactive.append(entry)
+            continue
+        if entry.name in overrides:
+            previous = overrides[entry.name]
+            raise SystemExit(
+                f"{entry.location}: duplicate active override for {entry.name}; "
+                f"previous at {previous.location}"
+            )
+        overrides[entry.name] = entry
+
+    return overrides, inactive, notes
+
+
+def write_effective(output: Path, active_entries: list[RequirementEntry], overrides: dict[str, RequirementEntry]) -> None:
+    lines = [
+        "# Generated by oci-odoo-builder odoo-normalize-requirements. Do not edit directly.",
+        "# Source of truth: requirements.in + requirements-constraints.in + requirements-overrides.in.",
+        "",
+    ]
+
+    kept = [entry for entry in active_entries if entry.name not in overrides]
+    selected = sorted(kept + list(overrides.values()), key=lambda entry: (entry.name or "", entry.line, entry.location))
+    lines.extend(entry.line for entry in selected)
+    lines.append("")
+    output.write_text("\n".join(lines))
+
+
+def write_report(
+    report: Path,
+    *,
+    env: dict[str, str],
+    included_files: list[Path],
+    source_entries: list[RequirementEntry],
+    notes: list[ParseNote],
+    overrides: dict[str, RequirementEntry],
+    inactive_overrides: list[RequirementEntry],
+    override_notes: list[ParseNote],
+    output: Path,
+) -> None:
+    active_entries = [entry for entry in source_entries if entry.active]
+    inactive_entries = [entry for entry in source_entries if not entry.active]
+    active_grouped = group_by_name(active_entries)
+
+    lines: list[str] = [
+        "# Requirements normalization report",
+        "",
+        "## Target environment",
+        "",
+    ]
+    for key in [
+        "python_version",
+        "python_full_version",
+        "sys_platform",
+        "os_name",
+        "platform_system",
+        "platform_machine",
+        "platform_python_implementation",
+        "implementation_name",
+    ]:
+        if key in env:
+            lines.append(f"- {key}: `{env[key]}`")
+
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            "",
+            f"- included files: {len(set(included_files))}",
+            f"- source requirements: {len(source_entries)}",
+            f"- active source requirements: {len(active_entries)}",
+            f"- inactive source requirements: {len(inactive_entries)}",
+            f"- active overrides: {len(overrides)}",
+            f"- generated effective input: `{output}`",
+            "",
+            "## Included files",
+            "",
+        ]
+    )
+    for path in sorted(set(included_files)):
+        lines.append(f"- `{path}`")
+
+    lines.extend(["", "## Overrides", ""])
+    if overrides:
+        for name in sorted(overrides):
+            override = overrides[name]
+            discarded = active_grouped.get(name, [])
+            status = "active replacement"
+            if not discarded:
+                status = "orphan/redundant for this environment"
+            lines.append(f"- `{name}` -> `{override.line}` ({override.location}) [{status}]")
+            for entry in discarded:
+                lines.append(f"  - discarded active: `{entry.line}` ({entry.location})")
+    else:
+        lines.append("- none")
+
+    if inactive_overrides:
+        lines.extend(["", "### Inactive overrides", ""])
+        for entry in inactive_overrides:
+            lines.append(f"- `{entry.line}` ({entry.location})")
+
+    lines.extend(["", "## Active duplicate package names before overrides", ""])
+    duplicates = {name: items for name, items in active_grouped.items() if len(items) > 1}
+    if duplicates:
+        for name in sorted(duplicates):
+            lines.append(f"- `{name}`")
+            for entry in duplicates[name]:
+                marker = "discarded by override" if name in overrides else "kept for pip-compile"
+                lines.append(f"  - `{entry.line}` ({entry.location}) [{marker}]")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Inactive marker-filtered requirements", ""])
+    if inactive_entries:
+        for entry in sorted(inactive_entries, key=lambda item: (item.path.as_posix(), item.line_no)):
+            lines.append(f"- `{entry.line}` ({entry.location})")
+    else:
+        lines.append("- none")
+
+    combined_notes = notes + override_notes
+    lines.extend(["", "## Parser notes", ""])
+    if combined_notes:
+        for note in combined_notes:
+            lines.append(f"- {note.kind}: `{note.line}` ({note.location}) - {note.message}")
+    else:
+        lines.append("- none")
+
+    report.write_text("\n".join(lines) + "\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--requirements", default="requirements.in")
+    parser.add_argument("--overrides", default="requirements-overrides.in")
+    parser.add_argument("--output", default="requirements.effective.in")
+    parser.add_argument("--report", default="requirements.effective.report.md")
+    parser.add_argument("--python-version")
+    parser.add_argument("--python-full-version")
+    parser.add_argument("--sys-platform")
+    parser.add_argument("--os-name")
+    parser.add_argument("--platform-system")
+    parser.add_argument("--platform-machine")
+    args = parser.parse_args()
+
+    env = build_environment(args)
+    requirements = Path(args.requirements)
+    overrides_path = Path(args.overrides)
+    output = Path(args.output)
+    report = Path(args.report)
+
+    source_entries, notes, included_files = read_requirements_tree(requirements, env)
+    invalid = [note for note in notes if note.kind == "invalid"]
+    if invalid:
+        for note in invalid:
+            print(f"{note.location}: invalid requirement: {note.message}")
+        raise SystemExit(2)
+
+    overrides, inactive_overrides, override_notes = read_overrides(overrides_path, env)
+    active_entries = [entry for entry in source_entries if entry.active]
+    write_effective(output, active_entries, overrides)
+    write_report(
+        report,
+        env=env,
+        included_files=included_files,
+        source_entries=source_entries,
+        notes=notes,
+        overrides=overrides,
+        inactive_overrides=inactive_overrides,
+        override_notes=override_notes,
+        output=output,
+    )
+
+    print(f"wrote {output}")
+    print(f"wrote {report}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

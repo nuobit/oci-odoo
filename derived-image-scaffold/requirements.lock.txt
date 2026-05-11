@@ -1,0 +1,7 @@
+# Bootstrap placeholder.
+#
+# First build must use:
+#   --build-arg REFRESH_REQUIREMENTS_LOCK=1
+#
+# Then extract the generated /tmp/requirements.lock.txt from the temporary
+# source-build image, replace this file, review the diff, and commit it.

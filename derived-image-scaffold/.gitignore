@@ -1,0 +1,28 @@
+# Local/editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python/tool caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+
+# Local build/test output
+*.log
+build/
+dist/
+tmp/
+.tmp/
+secrets/
+.secrets/
+
+# Candidate/generated scratch files that are not release state
+oca-candidates*.yaml
+*.tmp
