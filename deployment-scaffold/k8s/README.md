@@ -52,9 +52,12 @@ memory-backed `emptyDir` while preserving that permission contract.
 
 ## Example Instance
 
-Use `instances/example/odoo.conf.example` as the non-secret starting point for
-each real Odoo instance. In a real deployment repo, copy it to a concrete
-instance path and name it `odoo.conf`, for example:
+Use `instances/instance1.example/odoo.conf` as the non-secret starting point
+for each real Odoo instance. The directory name marks the sample as an example,
+while the file name matches the real deployment shape:
+`instances/<instance>/odoo.conf`.
+
+In a real deployment repo, copy it to a concrete instance path, for example:
 
 ```text
 instances/production/odoo.conf
@@ -66,18 +69,19 @@ Then pass it to the container with `ODOO_BASE_CONFIG_FILE`.
 
 ## Kubernetes Wiring Example
 
-`manifests/runtime-config-wiring.example.yaml` shows the generic wiring that is
-already decided:
+`manifests/patterns/runtime-config-wiring.example.yaml` shows the generic
+wiring pattern that is already decided:
 
 - mount `odoo.conf` from a ConfigMap;
-- mount `db_password` and `admin_passwd` from a Secret;
+- mount `db_password` and `admin_passwd` from projected Secret files;
 - mount `/run/odoo` as memory-backed `emptyDir`;
 - prepare `/run/odoo` as `0700`, owned by UID/GID `1000`, before `odoo-run`
   writes the generated runtime config.
 
-It is intentionally not a complete production manifest. Services, Ingresses,
-PVC names, probes, resources, backup Jobs, and instance-specific labels belong
-to each concrete deployment repository.
+It is intentionally not a complete production manifest and should not be copied
+verbatim into a concrete repo. Services, Ingresses, PVC names, probes,
+resources, backup Jobs, and instance-specific labels belong to each concrete
+deployment repository.
 
 Replace `ghcr.io/<owner>/<image-repo>:...` with the concrete deployable image
 tag. For a client-owned image repo, `<image-repo>` may simply be `oci-odoo`
@@ -88,3 +92,13 @@ Concrete invented example:
 ```text
 ghcr.io/examplecorp/oci-odoo:17.0-py310-trixie-r0001
 ```
+
+The Secret-name/key contract is documented in:
+
+```text
+manifests/secrets/README.md
+```
+
+`admin_passwd` is Odoo's master password / database-manager password. Keep the
+canonical Odoo config name `admin_passwd`; do not create a separate
+`master_password` key for the same value.

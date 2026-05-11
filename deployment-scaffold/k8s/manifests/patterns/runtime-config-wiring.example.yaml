@@ -3,7 +3,9 @@
 # This file documents the agreed runtime-config wiring:
 #
 # - non-secret odoo.conf comes from a ConfigMap;
-# - db_password/admin_passwd come from Kubernetes Secret files;
+# - db_password/admin_passwd come from Kubernetes Secret files, projected from
+#   the existing PostgreSQL app-role Secret plus the Odoo admin/master-password
+#   Secret;
 # - /run/odoo is per-Pod volatile state;
 # - /run/odoo must be owned by the odoo user before odoo-run writes
 #   /run/odoo/odoo-runtime.conf.
@@ -31,6 +33,10 @@ spec:
         app.kubernetes.io/name: odoo
         app.kubernetes.io/instance: <instance>
     spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+
       initContainers:
         - name: prepare-odoo-run-dir
           image: busybox:1.36
@@ -44,6 +50,9 @@ spec:
 
       containers:
         - name: odoo
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
           # Placeholder form:
           #   ghcr.io/<owner>/<image-repo>:17.0-py310-trixie-r0001
           # Concrete invented example:
@@ -82,8 +91,19 @@ spec:
                 path: odoo.conf
 
         - name: odoo-secrets
-          secret:
-            secretName: odoo-<instance>-secrets
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: pg16-odoo17-<instance>
+                  items:
+                    - key: POSTGRES_PASSWORD
+                      path: db_password
+              - secret:
+                  name: odoo17-<instance>-admin
+                  items:
+                    - key: admin_passwd
+                      path: admin_passwd
 
         - name: odoo-run
           emptyDir:

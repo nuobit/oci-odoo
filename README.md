@@ -492,11 +492,13 @@ target runtime/orchestrator. The current included example is
 deployment. Future siblings can be added for `podman/`, `docker-compose/`,
 `nomad/`, or any other OCI-capable deployment model.
 
-The k8s scaffold's `instances/example/odoo.conf.example` is the starting point
-for real per-instance files such as `instances/production/odoo.conf` in a client
-deployment repository. Its `manifests/runtime-config-wiring.example.yaml`
-documents Kubernetes ConfigMap/Secret/`/run/odoo` wiring without pretending to
-be a complete production manifest.
+The k8s scaffold's `instances/instance1.example/odoo.conf` is the starting
+point for real per-instance files such as `instances/production/odoo.conf` in a
+client deployment repository. Its
+`manifests/patterns/runtime-config-wiring.example.yaml` documents Kubernetes
+ConfigMap/Secret/`/run/odoo` wiring without pretending to be a complete
+production manifest. Its `manifests/secrets/README.md` documents the
+Secret-name/key contract without containing Secret values.
 
 The distinction is:
 
