@@ -213,7 +213,7 @@ Refresh controls are deliberately split by artifact:
 
 ```bash
 # Source lock: updates repos.lock.yaml only; does not run gitaggregate.
-export OCI_ODOO_BASE_REPO="$HOME/src/container-images/odoo/nuobit/oci-odoo"
+export OCI_ODOO_BASE_REPO="$HOME/src/container-infra/odoo/nuobit/oci-odoo"
 "$OCI_ODOO_BASE_REPO/tools/lock-repos"
 "$OCI_ODOO_BASE_REPO/tools/lock-repos" --refresh-merge ./odoo <remote> <ref>
 "$OCI_ODOO_BASE_REPO/tools/lock-repos" --refresh ./odoo

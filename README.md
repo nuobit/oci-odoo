@@ -591,7 +591,7 @@ piece before CI/GitOps automation exists.
 From the base repository:
 
 ```bash
-export OCI_ODOO_WORKDIR="$HOME/src/container-images/odoo"
+export OCI_ODOO_WORKDIR="$HOME/src/container-infra/odoo"
 export OCI_ODOO_BASE_REPO="$OCI_ODOO_WORKDIR/nuobit/oci-odoo"
 
 cd "$OCI_ODOO_BASE_REPO"
@@ -716,7 +716,7 @@ Start every deployment image by copying the whole scaffold. Example for a new
 client organization called `diaspora`:
 
 ```bash
-export OCI_ODOO_WORKDIR="$HOME/src/container-images/odoo"
+export OCI_ODOO_WORKDIR="$HOME/src/container-infra/odoo"
 export OCI_ODOO_BASE_REPO="$OCI_ODOO_WORKDIR/nuobit/oci-odoo"
 
 cd "$OCI_ODOO_WORKDIR"
