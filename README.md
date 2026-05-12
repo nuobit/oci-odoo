@@ -1,7 +1,6 @@
-# Odyssey
+# Odyssey (`oci-odoo`)
 
-**oci-odoo**: reproducible, immutable OCI releases for industrialized Odoo
-deployments.
+Reproducible, immutable OCI releases for industrialized Odoo deployments.
 
 Odyssey is the project name for `oci-odoo`, a reusable image and tooling system
 for building reproducible Odoo OCI releases. This repository builds reusable
