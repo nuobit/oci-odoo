@@ -1,13 +1,15 @@
-# oci-odoo
+# Odyssey
 
-**Odyssey**: reproducible, immutable OCI releases for industrialized Odoo
+**oci-odoo**: reproducible, immutable OCI releases for industrialized Odoo
 deployments.
 
-This repository builds reusable Odoo OCI image foundations for turning
-Odoo deployments into locked, reviewable, rebuildable OCI artifacts. The goal is
-to move Odoo delivery away from mutable server state and toward explicit Git
-inputs, pinned locks, controlled refreshes, and final images that contain the
-exact source tree and Python environment for a release.
+Odyssey is the project name for `oci-odoo`, a reusable image and tooling system
+for building reproducible Odoo OCI releases. This repository builds reusable
+Odoo OCI image foundations for turning Odoo deployments into locked, reviewable,
+rebuildable artifacts. The goal is to move Odoo delivery away from mutable
+server state and toward explicit Git inputs, pinned locks, controlled refreshes,
+and final images that contain the exact source tree and Python environment for a
+release.
 
 ## Why This Exists
 
