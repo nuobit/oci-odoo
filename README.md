@@ -1,11 +1,54 @@
 # oci-odoo
 
-Generic NuoBiT Odoo OCI image project.
+**Odyssey**: reproducible, immutable OCI releases for industrialized Odoo
+deployments.
 
-This repository builds the reusable NuoBiT Odoo image foundations. It is not a
-deployable Odoo image by itself. Deployment images, such as
-`oci-odoo`, are built on top of these foundations and add the exact
-Enterprise/OCA/NuoBiT/project-specific addon source selection.
+This repository builds reusable Odoo OCI image foundations for turning
+Odoo deployments into locked, reviewable, rebuildable OCI artifacts. The goal is
+to move Odoo delivery away from mutable server state and toward explicit Git
+inputs, pinned locks, controlled refreshes, and final images that contain the
+exact source tree and Python environment for a release.
+
+## Publication Status
+
+This repository is being kept private while the Odoo 17 workflow is validated
+end to end. Before making it public again, verify the runtime/builder images, a
+derived image build, lock refresh/extraction, deployment scaffold, and smoke
+tests. Then remove or update this pre-publication note, publish the repository,
+and add the final public topics/description.
+
+## Why This Exists
+
+Many Odoo deployments work by convention: pull some repositories, install some
+Python packages, patch server state, restart, and hope the next rebuild behaves
+the same way. That is fast for manual operations, but weak for production
+change control.
+
+Odyssey makes the release contract explicit:
+
+- source repositories are declared and then locked in `repos.lock.yaml`;
+- Python dependencies are installed from `requirements.lock.txt` unless a
+  refresh is explicitly requested;
+- OCA, customer, Enterprise, and third-party addon sources are materialized once
+  during the derived-image build flow;
+- the generated addon path is baked into the final image;
+- build-only tools stay out of the runtime image;
+- system build/runtime packages are declared separately;
+- runtime secrets are injected at container start, not stored in images or Git.
+
+To our knowledge, `oci-odoo` is one of the few open-source Odoo
+containerization projects focused explicitly on end-to-end reproducibility and
+immutable deployable images. That claim is implemented through pinned
+base-image digests, source locks, Python locks, conditional refresh semantics,
+separate builder/runtime images, and deployment images that package the exact
+Odoo source tree, virtualenv, and generated addon path for a release.
+
+## What This Repository Builds
+
+This repository is not a deployable Odoo image by itself. It builds the reusable
+foundation images used by deployable Odoo image repositories. A deployment image
+adds the exact Enterprise/OCA/customer/provider/third-party addon source
+selection on top of these foundations.
 
 The repository is versioned per Odoo line. For Odoo 17 work, use branch `17.0`.
 The same branch publishes both foundation images:
@@ -14,6 +57,42 @@ The same branch publishes both foundation images:
 ghcr.io/nuobit/oci-odoo:17.0-py310-trixie-rNNNN
 ghcr.io/nuobit/oci-odoo-builder:17.0-py310-trixie-rNNNN
 ```
+
+## Kubernetes-ready, OCI-first
+
+Odyssey is not tied to Kubernetes, but it includes a Kubernetes/k3s deployment
+scaffold for production-style Odoo deployments. The same immutable image can run
+under Kubernetes, Docker, Podman, Docker Compose, CI, or any OCI-capable
+runtime.
+
+The Kubernetes scaffold exists to make the production contract explicit: stable
+Services select versioned Deployments, non-secret Odoo configuration lives in
+ConfigMaps, credentials are mounted as Secret files, filestore data lives in
+PVCs, registry access uses `imagePullSecrets`, and generated runtime config
+stays under `/run/odoo` as ephemeral process state. Addon code belongs in the
+image, not in mutable runtime volumes.
+
+## Technical Map
+
+The high-level implementation is:
+
+```text
+runtime image
+  clean Odoo runtime base, pinned OS/Python digest, runtime wrappers
+
+builder image
+  git aggregation, lock tooling, Python environment build, addon path generation
+
+derived image scaffold
+  starting point for concrete deployable images
+
+deployment scaffold
+  examples for running a produced image in k8s or another OCI-capable runtime
+```
+
+The deep technical contract is documented below and in the subdirectory README
+files. The README starts with the project goal, then keeps the exact build and
+runtime rules in the same place so the repository remains self-contained.
 
 ## Repository Layout
 
@@ -362,7 +441,7 @@ guardrail must be repeatable scripts/CI checks.
 
 - OCA repository selection.
 - Odoo Enterprise source.
-- NuoBiT/customer addon repositories.
+- Organization/customer addon repositories.
 - Deployment-specific `repos.yaml` or `repos.lock.yaml`.
 - Deployment-specific `requirements.lock.txt` or populated
   `requirements.in` / `requirements-constraints.in`.
@@ -561,7 +640,7 @@ deployment-scaffold/podman/  -> future Podman deployment repo/copy
 deployment-scaffold/docker-compose/ -> future Docker Compose deployment repo/copy
 ```
 
-The second scaffold is reusable NuoBiT knowledge, but the copied deployment
+The second scaffold is reusable deployment knowledge, but the copied deployment
 repo is client-specific. This preserves the ability to run the same derived
 image with Docker, Podman, containerd, Kubernetes/k3s, Docker Compose, CI, or
 local tests.
@@ -671,8 +750,8 @@ collapsed mentally into a single "build" step.
 
 2. Source intent selection
    Edit repos.yaml manually and, if useful, run discovery tools such as a future
-   OCA discovery helper. This is where OCA, NuoBiT, customer-specific, or
-   third-party repos are selected. Enterprise may require a separate
+   OCA discovery helper. This is where OCA, organization-specific,
+   customer-specific, or third-party repos are selected. Enterprise may require a separate
    customer-access download/acquisition flow and must not be assumed to be a
    normal public GitHub/gitaggregate repository.
    Output: updated repos.yaml.
