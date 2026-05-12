@@ -1,11 +1,14 @@
 # syntax=docker/dockerfile:1.7
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
 
 ARG ODOO_RUNTIME_IMAGE=local/oci-odoo:17.0-py310-trixie-r0001
 FROM ${ODOO_RUNTIME_IMAGE}
 
 LABEL org.opencontainers.image.title="oci-odoo-builder"
-LABEL org.opencontainers.image.description="Generic NuoBiT Odoo OCI build foundation"
-LABEL org.opencontainers.image.vendor="NuoBiT"
+LABEL org.opencontainers.image.description="Reusable Odoo OCI build foundation"
+LABEL org.opencontainers.image.vendor="NuoBiT Solutions, S.L."
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ENV ODOO_BUILDER_HOME=/opt/odoo-builder \
     ODOO_BUILDER_VENV=/opt/odoo-builder/venv \

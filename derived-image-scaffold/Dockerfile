@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
 
 # Final deployable image.
 # Build Dockerfile.source-build first, then pass that local image here.

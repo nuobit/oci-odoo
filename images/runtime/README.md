@@ -1,6 +1,6 @@
 # oci-odoo Runtime Image
 
-This directory owns the clean NuoBiT Odoo runtime base image:
+This directory owns the clean Odoo runtime base image:
 
 ```text
 ghcr.io/nuobit/oci-odoo:<version>

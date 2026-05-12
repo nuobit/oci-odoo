@@ -1,0 +1,11 @@
+Odyssey / oci-odoo
+Copyright 2026 NuoBiT Solutions, S.L.
+
+This product includes software developed by NuoBiT Solutions, S.L.
+
+Licensed under the Apache License, Version 2.0.
+
+This repository's license applies to its own code, documentation, Dockerfiles,
+scripts, and scaffolding. Odoo, OCA addons, Odoo Enterprise code, Debian
+packages, Python packages, base images, and other third-party components are
+governed by their own licenses.

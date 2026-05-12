@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
 
 # Default base image selected on 2026-05-11:
 #   docker.io/library/python:3.10.20-slim-trixie
@@ -21,8 +23,9 @@ ARG ODOO_PYTHON=/usr/local/bin/python3.10
 ARG ODOO_PYTHON_VERSION=3.10
 
 LABEL org.opencontainers.image.title="oci-odoo"
-LABEL org.opencontainers.image.description="Generic NuoBiT Odoo OCI runtime foundation"
-LABEL org.opencontainers.image.vendor="NuoBiT"
+LABEL org.opencontainers.image.description="Reusable Odoo OCI runtime foundation"
+LABEL org.opencontainers.image.vendor="NuoBiT Solutions, S.L."
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.base.name="${ODOO_BASE_IMAGE_HUMAN_REF}"
 LABEL org.opencontainers.image.python.version="${ODOO_PYTHON_VERSION}"
 

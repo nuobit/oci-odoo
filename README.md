@@ -9,14 +9,6 @@ to move Odoo delivery away from mutable server state and toward explicit Git
 inputs, pinned locks, controlled refreshes, and final images that contain the
 exact source tree and Python environment for a release.
 
-## Publication Status
-
-This repository is being kept private while the Odoo 17 workflow is validated
-end to end. Before making it public again, verify the runtime/builder images, a
-derived image build, lock refresh/extraction, deployment scaffold, and smoke
-tests. Then remove or update this pre-publication note, publish the repository,
-and add the final public topics/description.
-
 ## Why This Exists
 
 Many Odoo deployments work by convention: pull some repositories, install some
@@ -644,6 +636,18 @@ The second scaffold is reusable deployment knowledge, but the copied deployment
 repo is client-specific. This preserves the ability to run the same derived
 image with Docker, Podman, containerd, Kubernetes/k3s, Docker Compose, CI, or
 local tests.
+
+## License and Copyright
+
+Odyssey / `oci-odoo` is copyright (C) 2026 NuoBiT Solutions, S.L.
+
+This repository is licensed under the Apache License, Version 2.0. See
+`LICENSE` and `NOTICE`.
+
+The license applies to this repository's own code, documentation, Dockerfiles,
+scripts, and scaffolding. Odoo, OCA addons, Odoo Enterprise code, Debian
+packages, Python packages, base images, and other third-party components keep
+their own licenses.
 
 ## Build Commands
 

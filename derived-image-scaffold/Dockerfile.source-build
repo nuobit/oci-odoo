@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
 
 # Temporary source-build image for this derived Odoo image.
 # It is not deployed. It exists so gitaggregate runs exactly once for a

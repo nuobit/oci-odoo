@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a deterministic Odoo addons_path from locked sources.
 
 repos.lock.yaml is the source of truth for repository membership. The

@@ -1,6 +1,6 @@
 # oci-odoo-builder
 
-Generic NuoBiT Odoo OCI build foundation.
+Generic Odoo OCI build foundation.
 
 This image is a build-stage base, not a runtime image and not a deployable Odoo
 image. Deployment image Dockerfiles use it only in a temporary multi-stage

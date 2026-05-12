@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a git-aggregator-compatible repos.lock.yaml from repos.yaml.
 
 This tool is intentionally conservative:
