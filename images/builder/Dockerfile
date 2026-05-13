@@ -7,6 +7,7 @@ FROM ${ODOO_RUNTIME_IMAGE}
 
 LABEL org.opencontainers.image.title="oci-odoo-builder"
 LABEL org.opencontainers.image.description="Reusable Odoo OCI build foundation"
+LABEL org.opencontainers.image.source="https://github.com/nuobit/oci-odoo"
 LABEL org.opencontainers.image.vendor="NuoBiT Solutions, S.L."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 

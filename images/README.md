@@ -96,6 +96,32 @@ docker build \
   .
 ```
 
+When publishing either image to GHCR, add source/description as OCI index
+annotations after the normal push. Dockerfile labels remain useful metadata,
+but GHCR repository auto-linking for current OCI index tags was verified to
+depend on index-level `org.opencontainers.image.source`.
+
+```bash
+GHCR_REPO="ghcr.io/nuobit/oci-odoo"
+GHCR_TAG="17.0-py310-trixie-r0001"
+GHCR_IMAGE="${GHCR_REPO}:${GHCR_TAG}"
+LOCAL_IMAGE="local/oci-odoo:${GHCR_TAG}"
+
+docker tag "$LOCAL_IMAGE" "$GHCR_IMAGE"
+docker push "$GHCR_IMAGE"
+
+GHCR_DIGEST="$(docker buildx imagetools inspect "$GHCR_IMAGE" | awk '/^Digest:/ {print $2; exit}')"
+
+docker buildx imagetools create \
+  --annotation "index:org.opencontainers.image.source=https://github.com/nuobit/oci-odoo" \
+  --annotation "index:org.opencontainers.image.description=Reusable Odoo OCI runtime foundation" \
+  --tag "$GHCR_IMAGE" \
+  "${GHCR_REPO}@${GHCR_DIGEST}"
+```
+
+Use the same pattern for `ghcr.io/nuobit/oci-odoo-builder` with description
+`Reusable Odoo OCI build foundation`.
+
 Build another Python-on-trixie variant only by overriding all four runtime args
 together:
 

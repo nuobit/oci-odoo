@@ -359,6 +359,8 @@ docker rm "$cid"
 
 docker build \
   --build-arg ODOO_SOURCE_BUILD_IMAGE=local/oci-odoo-example-source-build:17.0-py310-trixie-r0001 \
+  --build-arg OCI_IMAGE_SOURCE=https://github.com/examplecorp/oci-odoo \
+  --build-arg "OCI_IMAGE_DESCRIPTION=Example Odoo 17 deployable image" \
   -t local/oci-odoo-example:17.0-py310-trixie-r0001 \
   .
 ```
@@ -370,6 +372,35 @@ For normal builds after the lock is committed, omit
 not deployed. The final `Dockerfile` creates the image that goes to the OCI
 registry. It can then be run by Docker, Podman, containerd, Kubernetes/k3s,
 Docker Compose, CI, or another OCI-capable runtime.
+
+When publishing the final image to GHCR, keep source/description in two places:
+Dockerfile labels for the executable image, and index annotations for the
+published OCI index that GHCR uses as the package tag.
+
+```bash
+GHCR_REPO="ghcr.io/examplecorp/oci-odoo"
+GHCR_TAG="17.0-py310-trixie-r0001"
+GHCR_IMAGE="${GHCR_REPO}:${GHCR_TAG}"
+LOCAL_IMAGE="local/oci-odoo-example:${GHCR_TAG}"
+OCI_SOURCE="https://github.com/examplecorp/oci-odoo"
+OCI_DESCRIPTION="Example Odoo 17 deployable image"
+
+docker tag "$LOCAL_IMAGE" "$GHCR_IMAGE"
+docker push "$GHCR_IMAGE"
+
+GHCR_DIGEST="$(docker buildx imagetools inspect "$GHCR_IMAGE" | awk '/^Digest:/ {print $2; exit}')"
+
+docker buildx imagetools create \
+  --annotation "index:org.opencontainers.image.source=${OCI_SOURCE}" \
+  --annotation "index:org.opencontainers.image.description=${OCI_DESCRIPTION}" \
+  --tag "$GHCR_IMAGE" \
+  "${GHCR_REPO}@${GHCR_DIGEST}"
+```
+
+This is required for reliable GHCR repository auto-linking in the tested
+laptop-publish workflow. If the package already exists without the source index
+annotation, connect it once from the GitHub package UI; after that the link is
+package-level and should survive normal tag updates.
 
 The `Dockerfile*` default `ARG` values point to immutable `ghcr.io/nuobit` base
 image releases and are the release source of truth. Use `--build-arg` only for

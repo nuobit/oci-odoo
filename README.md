@@ -182,6 +182,47 @@ ghcr.io/nuobit/oci-odoo:17.0-py310-trixie-r0001
 ghcr.io/nuobit/oci-odoo-builder:17.0-py310-trixie-r0001
 ```
 
+Publish GHCR images with OCI index annotations, not only Dockerfile labels.
+GHCR tags published by current Docker/BuildKit flows are OCI indexes. In a
+2026-05-13 controlled test, a fresh package with
+`org.opencontainers.image.source` only as an image label was not automatically
+linked to its repository; the same package linked correctly when the source was
+present as an `index` annotation.
+
+Use this pattern for each published image:
+
+```bash
+GHCR_REPO="ghcr.io/<owner>/<image>"
+GHCR_TAG="17.0-py310-trixie-r0001"
+GHCR_IMAGE="${GHCR_REPO}:${GHCR_TAG}"
+LOCAL_IMAGE="local/<image>:${GHCR_TAG}"
+OCI_SOURCE="https://github.com/<owner>/<repo>"
+OCI_DESCRIPTION="<short image description>"
+
+docker tag "$LOCAL_IMAGE" "$GHCR_IMAGE"
+docker push "$GHCR_IMAGE"
+
+GHCR_DIGEST="$(docker buildx imagetools inspect "$GHCR_IMAGE" | awk '/^Digest:/ {print $2; exit}')"
+
+docker buildx imagetools create \
+  --annotation "index:org.opencontainers.image.source=${OCI_SOURCE}" \
+  --annotation "index:org.opencontainers.image.description=${OCI_DESCRIPTION}" \
+  --tag "$GHCR_IMAGE" \
+  "${GHCR_REPO}@${GHCR_DIGEST}"
+```
+
+Concrete foundation values:
+
+```text
+ghcr.io/nuobit/oci-odoo
+  source:      https://github.com/nuobit/oci-odoo
+  description: Reusable Odoo OCI runtime foundation
+
+ghcr.io/nuobit/oci-odoo-builder
+  source:      https://github.com/nuobit/oci-odoo
+  description: Reusable Odoo OCI build foundation
+```
+
 ## Upstream Base Policy
 
 External upstream tags are not trusted as immutable. The Dockerfile records the

@@ -11,6 +11,12 @@ FROM ${ODOO_SOURCE_BUILD_IMAGE} AS source-build
 
 FROM ${ODOO_RUNTIME_IMAGE}
 
+ARG OCI_IMAGE_SOURCE=""
+ARG OCI_IMAGE_DESCRIPTION="Odoo 17 deployable image"
+
+LABEL org.opencontainers.image.source="${OCI_IMAGE_SOURCE}"
+LABEL org.opencontainers.image.description="${OCI_IMAGE_DESCRIPTION}"
+
 USER root
 
 COPY system-runtime-packages.txt /tmp/system-runtime-packages.txt
