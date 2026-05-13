@@ -10,7 +10,7 @@ builder stage.
 
 `oci-odoo` is the clean runtime base. It should contain only what is needed to
 run Odoo in a final OCI image. That image can be executed by Docker, Podman,
-containerd, Kubernetes/k3s, Docker Compose, CI, or another OCI-capable runtime.
+containerd, Kubernetes, Docker Compose, CI, or another OCI-capable runtime.
 
 `oci-odoo-builder` contains tools needed to build the final deployment image:
 

@@ -53,7 +53,7 @@ ghcr.io/nuobit/oci-odoo-builder:17.0-py310-trixie-rNNNN
 
 ## Kubernetes-ready, OCI-first
 
-Odyssey is not tied to Kubernetes, but it includes a Kubernetes/k3s deployment
+Odyssey is not tied to Kubernetes, but it includes a Kubernetes deployment
 scaffold for production-style Odoo deployments. The same immutable image can run
 under Kubernetes, Docker, Podman, Docker Compose, CI, or any OCI-capable
 runtime.
@@ -223,6 +223,34 @@ ghcr.io/nuobit/oci-odoo-builder
   description: Reusable Odoo OCI build foundation
 ```
 
+After first publication, verify the GitHub package settings in the UI:
+
+```text
+Package -> Package settings
+
+Repository link:
+  must point to the source repository
+
+Inherited access:
+  enable "Inherit access from source repository"
+
+Visibility:
+  foundation images such as nuobit/oci-odoo and nuobit/oci-odoo-builder:
+    set package visibility to Public when anonymous pulls should work
+
+  client deployable images:
+    keep package visibility Private
+```
+
+Important: GHCR may create a package as private even when it is linked to a
+public repository. Public repository, repository link, inherited access, and
+package visibility are separate settings. Changing a package to Public is a
+manual UI action and GitHub warns it cannot be made private again.
+
+If the inherited-access panel shows `0 members`, that does not mean inheritance
+is broken. It means there are no direct package-level member grants listed
+there; effective access comes from the linked source repository.
+
 ## Upstream Base Policy
 
 External upstream tags are not trusted as immutable. The Dockerfile records the
@@ -314,7 +342,7 @@ official Odoo `/entrypoint.sh`. Deployment images add Odoo source and selected
 addons on top of this runtime foundation.
 
 The builder image exists because build tools must not leak into the final image
-that Docker, Podman, containerd, Kubernetes/k3s, Docker Compose, CI, or another
+that Docker, Podman, containerd, Kubernetes, Docker Compose, CI, or another
 OCI-capable runtime runs. This follows Docker's multi-stage build pattern: use
 one stage for build/composition and copy only the final artifacts into a clean
 runtime stage.
@@ -556,7 +584,7 @@ baked Odoo source. When runtime variables are provided, it writes a temporary
 
 Database passwords and Odoo master passwords must come from runtime secret
 delivery, preferably mounted as files and referenced with
-`ODOO_DB_PASSWORD_FILE` and `ODOO_ADMIN_PASSWD_FILE`. In Kubernetes/k3s this
+`ODOO_DB_PASSWORD_FILE` and `ODOO_ADMIN_PASSWD_FILE`. In Kubernetes this
 usually means Secret-mounted files; in Docker/Podman/Compose it can be an
 equivalent secret-file mount or environment-file mechanism. This keeps secrets
 out of Dockerfiles, image layers, Git repositories, manifests/config files, and
@@ -601,9 +629,9 @@ must be private to the `odoo` user (`0700`) and the generated config must be
 
 Reusable deployment scaffolding lives under `deployment-scaffold/`, grouped by
 target runtime/orchestrator. The current included example is
-`deployment-scaffold/k8s/`, because this project is currently proving a k3s
-deployment. Future siblings can be added for `podman/`, `docker-compose/`,
-`nomad/`, or any other OCI-capable deployment model.
+`deployment-scaffold/k8s/`, because this project currently includes a
+Kubernetes deployment scaffold. Future siblings can be added for `podman/`,
+`docker-compose/`, `nomad/`, or any other OCI-capable deployment model.
 
 The k8s scaffold's `instances/instance1.example/odoo.conf` is the starting
 point for real per-instance files such as `instances/production/odoo.conf` in a
@@ -620,7 +648,7 @@ images/runtime/   -> files that build ghcr.io/nuobit/oci-odoo
 images/builder/   -> files that build ghcr.io/nuobit/oci-odoo-builder
 tools/            -> repo/CI/operator commands, executed outside images
 derived-image-scaffold/ -> starting point copied into derived image repos
-deployment-scaffold/k8s/ -> Kubernetes/k3s deployment scaffold example
+deployment-scaffold/k8s/ -> Kubernetes deployment scaffold example
 ```
 
 Do not move a file into `images/runtime` or `images/builder` unless it is part
@@ -669,14 +697,14 @@ should stay separate from `derived-image-scaffold/`:
 
 ```text
 derived-image-scaffold/      -> create a deployable image repo
-deployment-scaffold/k8s/     -> create a Kubernetes/k3s deployment repo/copy
+deployment-scaffold/k8s/     -> create a Kubernetes deployment repo/copy
 deployment-scaffold/podman/  -> future Podman deployment repo/copy
 deployment-scaffold/docker-compose/ -> future Docker Compose deployment repo/copy
 ```
 
 The second scaffold is reusable deployment knowledge, but the copied deployment
 repo is client-specific. This preserves the ability to run the same derived
-image with Docker, Podman, containerd, Kubernetes/k3s, Docker Compose, CI, or
+image with Docker, Podman, containerd, Kubernetes, Docker Compose, CI, or
 local tests.
 
 ## License and Copyright

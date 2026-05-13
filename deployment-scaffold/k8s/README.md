@@ -93,6 +93,28 @@ Concrete invented example:
 ghcr.io/examplecorp/oci-odoo:17.0-py310-trixie-r0001
 ```
 
+Before deploying a private image, verify its GHCR package settings:
+
+```text
+Repository link:
+  package is linked to the image source repository
+
+Inherited access:
+  "Inherit access from source repository" is enabled
+
+Visibility:
+  private client image packages stay Private
+  public foundation image packages are Public if anonymous pulls are expected
+```
+
+If inherited access shows `0 members`, that only means there are no direct
+package-level member grants; inherited access still comes from the linked
+source repository.
+
+If the deployable image package is private, Kubernetes needs a namespace-scoped
+`imagePullSecret` with read access to that package. This is independent from the
+operator's local Git credentials and from Odoo/PostgreSQL runtime secrets.
+
 The Secret-name/key contract is documented in:
 
 ```text

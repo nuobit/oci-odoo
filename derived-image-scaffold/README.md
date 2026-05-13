@@ -81,13 +81,13 @@ Runtime-specific execution templates should live in a separate deployment
 scaffold, for example `deployment-scaffold/k8s/` in the base repository, and be
 copied into a concrete deployment repo such as `k8s-odoo-<deployment-key>`.
 Concrete invented example: `k8s-odoo-examplecorp`.
-Kubernetes/k3s is only one supported deployment model for the OCI image. Future
+Kubernetes is only one supported deployment model for the OCI image. Future
 deployment scaffolds may target Docker Compose, Podman, Nomad, or any other
 runtime/orchestrator that can run OCI images.
 
 The deployment repo can contain non-secret `odoo.conf` files, Deployments,
 Services, Ingresses, PVCs, Jobs, ConfigMaps, and references to Secrets when the
-target is Kubernetes/k3s. Equivalent Docker/Podman deployment repos would use
+target is Kubernetes. Equivalent Docker/Podman deployment repos would use
 their own runtime-specific files instead.
 
 Runtime should pass each non-secret `odoo.conf` with `ODOO_BASE_CONFIG_FILE`.
@@ -370,7 +370,7 @@ For normal builds after the lock is committed, omit
 
 `Dockerfile.source-build` creates a temporary local image. It is not pushed and
 not deployed. The final `Dockerfile` creates the image that goes to the OCI
-registry. It can then be run by Docker, Podman, containerd, Kubernetes/k3s,
+registry. It can then be run by Docker, Podman, containerd, Kubernetes,
 Docker Compose, CI, or another OCI-capable runtime.
 
 When publishing the final image to GHCR, keep source/description in two places:
@@ -401,6 +401,29 @@ This is required for reliable GHCR repository auto-linking in the tested
 laptop-publish workflow. If the package already exists without the source index
 annotation, connect it once from the GitHub package UI; after that the link is
 package-level and should survive normal tag updates.
+
+After first publication, check the package settings in GitHub:
+
+```text
+Package -> Package settings
+
+Repository link:
+  must point to this deployable image repository
+
+Inherited access:
+  enable "Inherit access from source repository"
+
+Visibility:
+  client deployable image packages are normally Private
+```
+
+Do not assume package settings from the repository visibility. GHCR can create a
+package as private even when it is linked to a public repository, and inherited
+access is separate from public/private visibility.
+
+If inherited access shows `0 members`, do not treat that as a failure by itself.
+It means no direct package-level members are listed; access is inherited from
+the linked source repository.
 
 The `Dockerfile*` default `ARG` values point to immutable `ghcr.io/nuobit` base
 image releases and are the release source of truth. Use `--build-arg` only for

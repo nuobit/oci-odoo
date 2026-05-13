@@ -41,7 +41,7 @@ It must not contain client source selection or build tooling:
 
 Deployable images copy their final source tree into this runtime base from a
 temporary builder stage. The resulting OCI image is generic: it can run with
-Docker, Podman, containerd, Kubernetes/k3s, Docker Compose, CI, or another
+Docker, Podman, containerd, Kubernetes, Docker Compose, CI, or another
 OCI-capable runtime. Every runtime inherits the same contract.
 
 ## Runtime Configuration Contract
@@ -58,7 +58,7 @@ generated runtime config file at `/run/odoo/odoo-runtime.conf`, mode `0600`, and
 executes Odoo with `-c`.
 Passwords must come from the runtime secret-delivery mechanism, preferably
 mounted as files and referenced with `*_FILE` variables so they are not placed
-on the command line. In Kubernetes/k3s this means Secret-mounted files; in
+on the command line. In Kubernetes this means Secret-mounted files; in
 Docker, Podman, Docker Compose, or another OCI runtime it means the equivalent
 secret or env-file mechanism for that runtime.
 `/run/odoo` is owned by the `odoo` user and mode `0700`; if the deployment
