@@ -114,6 +114,10 @@ source repository.
 If the deployable image package is private, Kubernetes needs a namespace-scoped
 `imagePullSecret` with read access to that package. This is independent from the
 operator's local Git credentials and from Odoo/PostgreSQL runtime secrets.
+Use a client-controlled or operations-controlled technical registry identity for
+production pull secrets, not a personal operator account. The Secret should be
+type `kubernetes.io/dockerconfigjson`, the standard Kubernetes registry-pull
+Secret format.
 
 The Secret-name/key contract is documented in:
 

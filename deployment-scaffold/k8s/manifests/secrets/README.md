@@ -89,3 +89,58 @@ kubectl -n <namespace> create secret generic odoo17-<instance>-admin \
 
 Do not use shell history with literal passwords. Do not paste the value into a
 committed file.
+
+## Registry Pull Secrets
+
+If the deployable image package is private, Kubernetes needs an
+`imagePullSecret` in the same namespace as the Pods.
+
+This is still a Kubernetes `Secret`, but it is not the same type as the generic
+application password Secrets:
+
+```text
+PostgreSQL/Odoo password Secrets -> generic/Opaque application secrets
+Private registry pull Secret     -> kubernetes.io/dockerconfigjson
+```
+
+For private registry pulls, use `kubernetes.io/dockerconfigjson`. It contains a
+`.dockerconfigjson` key following the `~/.docker/config.json` registry
+credential format. The older `kubernetes.io/dockercfg` format is legacy; do not
+choose it for new work. A plain `Opaque` Secret is correct for application
+passwords, but not the native `imagePullSecrets` registry format.
+
+Use a client-controlled or operations-controlled technical actor for production
+pull credentials, not a personal operator account. For GHCR, a narrow
+fine-grained PAT should normally be:
+
+```text
+resource owner: <client-github-org>
+repositories: selected image source repository only
+permissions: Contents read, Packages read
+expiration: no expiration if policy allows; otherwise document rotation
+```
+
+Example shape:
+
+```bash
+read -rsp "GHCR pull token: " GHCR_TOKEN
+echo
+kubectl -n <namespace> create secret docker-registry ghcr-<owner>-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<technical-github-username> \
+  --docker-password="$GHCR_TOKEN"
+unset GHCR_TOKEN
+```
+
+Verify only metadata:
+
+```bash
+kubectl -n <namespace> get secret ghcr-<owner>-pull \
+  -o jsonpath='{.type}{" data="}{.data | length}{"\n"}'
+```
+
+Expected shape:
+
+```text
+kubernetes.io/dockerconfigjson data=1
+```
