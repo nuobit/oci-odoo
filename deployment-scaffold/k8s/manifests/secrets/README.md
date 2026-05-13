@@ -110,15 +110,22 @@ choose it for new work. A plain `Opaque` Secret is correct for application
 passwords, but not the native `imagePullSecrets` registry format.
 
 Use a client-controlled or operations-controlled technical actor for production
-pull credentials, not a personal operator account. For GHCR, a narrow
-fine-grained PAT should normally be:
+pull credentials, not a personal operator account.
+
+For GHCR registry-client authentication (`docker login`, Kubernetes/containerd
+image pulls), GitHub documents personal access token **classic** authentication
+for GitHub Packages/GHCR. Start with:
 
 ```text
-resource owner: <client-github-org>
-repositories: selected image source repository only
-permissions: Contents read, Packages read
+token type: classic PAT
+scopes: read:packages
 expiration: no expiration if policy allows; otherwise document rotation
 ```
+
+If `read:packages` alone fails with a pull authorization error for a private
+package, first verify package visibility, repository link, inherited access,
+and account permissions. Add broader scopes such as `repo` only after a
+reproduced failure and explicit approval.
 
 Example shape:
 
