@@ -390,13 +390,22 @@ def confirm_enterprise_import(args: argparse.Namespace, community_src: Path) -> 
 
     message = "\n".join(
         [
-            "Enterprise import check",
-            "-----------------------",
+            "Odoo Enterprise import warning",
+            "------------------------------",
             f"Community source: {community_src}",
             "",
-            "This import will use the Community source passed with --community-src as the reference.",
-            "Every downloaded Odoo module that is not present in that Community source will be imported as Enterprise.",
-            "If that Community source is stale, Community modules may be imported into the Enterprise mirror.",
+            "This command imports Enterprise modules by comparing two source trees:",
+            "",
+            "  Enterprise modules to import = downloaded Odoo source - Community source",
+            "",
+            "That means the Community source you pass with --community-src is the source of truth.",
+            "If --community-src is outdated, this command may import normal Community modules as Enterprise modules.",
+            "",
+            "Recommended before continuing:",
+            "  1. Refresh the Odoo Community lock, for example: tools/lock-repos --refresh ./odoo",
+            "  2. Use the materialized Community source from that refreshed lock as --community-src",
+            "",
+            "The command will not refresh Community for you.",
             "",
         ]
     )
@@ -404,7 +413,7 @@ def confirm_enterprise_import(args: argparse.Namespace, community_src: Path) -> 
     if not sys.stdin.isatty():
         print(message, file=sys.stderr)
         print(
-            "ERROR: non-interactive Enterprise import requires --yes to acknowledge this rule.",
+            "ERROR: non-interactive Enterprise import requires --yes to confirm this warning.",
             file=sys.stderr,
         )
         return False

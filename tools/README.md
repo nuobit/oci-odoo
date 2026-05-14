@@ -98,8 +98,11 @@ truth: every downloaded module absent from that Community checkout is treated as
 Enterprise. No manual module-classification file is used.
 
 When run interactively, the command prints this Enterprise import rule and asks
-for confirmation before continuing. In scripts/CI, pass `--yes` to acknowledge
-the rule explicitly and avoid a prompt.
+for confirmation before continuing. The warning says plainly that the command
+imports Enterprise as `downloaded Odoo source - Community source`; therefore an
+outdated `--community-src` can make normal Community modules enter the private
+Enterprise mirror by mistake. In scripts/CI, pass `--yes` to acknowledge that
+warning explicitly and avoid a prompt.
 
 The tool still reads each Enterprise module manifest with `ast.literal_eval`
 and reports the manifest license as useful metadata, but license is no longer
