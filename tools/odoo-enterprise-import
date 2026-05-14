@@ -6,7 +6,9 @@
 
 This first implementation is intentionally dry-run only. It validates the
 source archive against the exact Community source selected by repos.lock.yaml
-and reports what would become the Enterprise-only addon set.
+and reports the modules that are not present in that Community source. Those are
+Enterprise candidates until reviewed: an extra module can also mean the ZIP was
+generated from a newer Community snapshot.
 
 The import phase is deliberately separate from image builds:
 - this tool handles ZIP acquisition/classification/import preparation;
@@ -213,11 +215,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
     parser.add_argument(
-        "--allow-community-content-drift",
-        action="store_true",
-        help="Report but do not fail when matching Community modules differ byte-for-byte",
-    )
-    parser.add_argument(
         "--allow-community-head-mismatch",
         action="store_true",
         help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
@@ -264,13 +261,33 @@ def main() -> int:
         community_names = set(community_modules)
         download_names = set(download_modules)
         missing_community = sorted(community_names - download_names)
-        enterprise_only = sorted(download_names - community_names)
+        candidate_enterprise = sorted(download_names - community_names)
         matched_community = sorted(community_names & download_names)
         drifted_community = [
             name
             for name in matched_community
             if community_modules[name].digest != download_modules[name].digest
         ]
+        recommendations: list[str] = []
+        if missing_community:
+            recommendations.extend(
+                [
+                    "Ensure the Enterprise ZIP was freshly downloaded.",
+                    "Run lock-repos --refresh ./odoo if the local Community lock may be stale, then retry.",
+                    "Ensure --community-src was materialized from the same repos.lock.yaml being checked.",
+                ]
+            )
+        if drifted_community:
+            recommendations.extend(
+                [
+                    "Review drifted Community modules before importing.",
+                    "If the ZIP was generated from a newer Community snapshot, refresh the Community lock and retry.",
+                ]
+            )
+        if candidate_enterprise:
+            recommendations.append(
+                "Review candidate Enterprise modules; if any are actually newer Community modules, refresh Community and retry."
+            )
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -288,11 +305,12 @@ def main() -> int:
                 "matched_community_modules": len(matched_community),
                 "missing_community_modules": len(missing_community),
                 "drifted_community_modules": len(drifted_community),
-                "enterprise_only_modules": len(enterprise_only),
+                "candidate_enterprise_modules": len(candidate_enterprise),
             },
             "missing_community_modules": missing_community,
             "drifted_community_modules": sorted(drifted_community),
-            "enterprise_only_modules": enterprise_only,
+            "candidate_enterprise_modules": candidate_enterprise,
+            "recommendations": recommendations,
         }
 
         if args.report_json:
@@ -302,17 +320,17 @@ def main() -> int:
 
         if missing_community:
             print(
-                "ERROR: Enterprise download is not an exhaustive superset of Community.",
+                "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
+                "Refresh the Enterprise ZIP and/or run lock-repos --refresh ./odoo, then retry.",
                 file=sys.stderr,
             )
             return 2
-        if drifted_community and not args.allow_community_content_drift:
+        if drifted_community:
             print(
-                "ERROR: Matching Community modules differ from the locked Community source. "
-                "Use --allow-community-content-drift only after reviewing the report.",
+                "WARNING: Matching Community modules differ from the locked Community source. "
+                "Review before importing; this may mean the ZIP and Community lock are from different snapshots.",
                 file=sys.stderr,
             )
-            return 3
         if community_head and community_head != community_revision:
             message = "Community worktree HEAD differs from repos.lock.yaml revision."
             if not args.allow_community_head_mismatch:

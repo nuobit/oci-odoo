@@ -46,7 +46,8 @@ against the exact Community checkout selected by `repos.lock.yaml`.
 This tool is the first step of the Enterprise mirror flow. It does not download
 from odoo.com and it does not write Git commits yet. It answers the question:
 "given this Enterprise payload and this locked Community source, which modules
-are Enterprise-only and can be imported into the private Enterprise Git repo?"
+are Enterprise candidates and can be reviewed before importing into the private
+Enterprise Git repo?"
 
 Example:
 
@@ -65,9 +66,12 @@ The report records three separate identities:
 - `community_worktree_head`: the local Community checkout used for comparison.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
-Community, when matching Community modules drift byte-for-byte, or when the
-local Community checkout is not at the locked revision. Override flags exist
-only for reviewed exceptions.
+the locked Community source, or when the local Community checkout is not at the
+locked revision. Matching Community modules that drift byte-for-byte are
+reported as warnings because Odoo controls the ZIP generation and it may not
+match our current Community lock exactly. Extra ZIP modules are reported as
+`candidate_enterprise_modules`; review them before import because an extra name
+can also mean the ZIP came from a newer Community snapshot.
 
 The old local proof of concept for downloading from odoo.com proved the
 separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
