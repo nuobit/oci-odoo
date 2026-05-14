@@ -11,7 +11,8 @@ It contains only the common pieces needed to run an already-built Odoo release:
 - Debian/Python runtime dependencies;
 - `wkhtmltox` and common Odoo runtime packages;
 - the `odoo` user and filesystem contract;
-- generic runtime scripts such as `odoo-run`, `odoo-update`, and `odoo-shell`;
+- generic runtime scripts such as `odoo-run`, `odoo-init`, `odoo-update`, and
+  `odoo-shell`;
 - generic non-secret configuration conventions.
 
 For Odoo 17, this runtime line uses Debian trixie with Python 3.10 from the
@@ -106,6 +107,40 @@ config. This keeps runtime/secret-provided values authoritative without mutating
 the image or the deployment config file.
 
 This runtime config step may configure how the released image runs, but it must
-not build the release. `odoo-run`, `odoo-update`, and `odoo-shell` must not
-fetch Git repositories, run `gitaggregate`, install Python packages, mutate
-addons, or change the baked source tree.
+not build the release. `odoo-run`, `odoo-init`, `odoo-update`, and `odoo-shell`
+must not fetch Git repositories, run `gitaggregate`, install Python packages,
+mutate addons, or change the baked source tree.
+
+## Database Lifecycle Helpers
+
+`odoo-run` is the normal long-running entrypoint.
+
+`odoo-init` is an explicit operator tool for the special case where a
+PostgreSQL database exists but is completely empty and must be initialized as
+an Odoo database:
+
+```bash
+odoo-init <database>
+odoo-init <database> <modules>
+```
+
+The default module set is `base`, equivalent to running Odoo with
+`-i base --stop-after-init --without-demo=all`.
+
+`odoo-init` is deliberately not automatic. It is not run by the image entrypoint
+and must not be embedded blindly in normal Deployments. Before initializing, it
+connects to PostgreSQL using the same non-secret config and secret-file
+conventions as `odoo-run` and refuses to proceed when:
+
+- `ir_module_module` already exists, meaning the database is already an Odoo
+  database;
+- any non-system table exists but Odoo metadata is missing, meaning the database
+  is ambiguous and should be inspected manually.
+
+Use `odoo-update <database> <modules|all>` for already-initialized Odoo
+databases.
+
+For Kubernetes, a one-off empty-DB smoke can run `odoo-init` inside an existing
+Pod or in a dedicated Job that mounts the same ConfigMap and Secret files as
+the normal Deployment. Do not run it during production cutover with restored
+client databases.

@@ -95,6 +95,7 @@ images/runtime/
   README.md
   scripts/
     odoo-run
+    odoo-init
     odoo-update
     odoo-shell
 
@@ -310,7 +311,8 @@ Python 3.10-compatible runtimes.
 
 - Runtime image:
   - common runtime conventions;
-  - generic scripts such as `odoo-run`, `odoo-update`, and `odoo-shell`;
+- generic scripts such as `odoo-run`, `odoo-init`, `odoo-update`, and
+  `odoo-shell`;
   - shared runtime dependencies that are truly generic;
   - generic non-secret configuration conventions;
   - the Python virtual environment used by deployment images to install Odoo
@@ -492,7 +494,7 @@ verify system-runtime-packages.txt packages are present when required
 verify requirements.lock.txt is not copied into the final runtime image
 verify .git directories are not copied into /opt/odoo/src
 verify generated addons_path
-run a PostgreSQL-backed Odoo smoke test with -i base --stop-after-init
+run a PostgreSQL-backed Odoo smoke test with odoo-init
 ```
 
 Rule: no image release should be published if the permanent validation suite
@@ -581,6 +583,13 @@ stage. Build-only packages needed to compile Python dependencies belong in
 build script. With no runtime configuration environment it simply executes the
 baked Odoo source. When runtime variables are provided, it writes a temporary
 `/run/odoo/odoo-runtime.conf` with `0600` permissions and runs Odoo with `-c`.
+
+`odoo-init` is an explicit operator tool for initializing a genuinely empty
+PostgreSQL database as an Odoo database. It defaults to `base`, refuses to run
+when Odoo metadata already exists, and refuses ambiguous non-empty databases.
+This covers empty-DB smoke tests without making the normal image entrypoint
+dangerous for restored production databases. Production cutover with restored
+databases should start Odoo with `odoo-run`, not initialize the database.
 
 Database passwords and Odoo master passwords must come from runtime secret
 delivery, preferably mounted as files and referenced with

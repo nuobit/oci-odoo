@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: odoo-init <database> [modules] [extra odoo args...]
+
+Initialize an empty PostgreSQL database as an Odoo database.
+
+Default modules: base
+
+Safety rules:
+  - refuses to run if the database already contains ir_module_module;
+  - refuses to run if the database has non-system tables but is not Odoo;
+  - reads passwords from the same *_FILE convention as odoo-run;
+  - does not print or pass secrets on the command line.
+
+Use odoo-update for already-initialized Odoo databases.
+USAGE
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 2
+fi
+
+database="$1"
+shift
+
+modules="base"
+if [[ $# -gt 0 && "${1}" != -* ]]; then
+    modules="$1"
+    shift
+fi
+
+python_bin="${ODOO_RUN_PYTHON:-${ODOO_VENV:-/opt/odoo/venv}/bin/python}"
+if [[ ! -x "${python_bin}" ]]; then
+    python_bin="${ODOO_PYTHON:-}"
+fi
+if [[ ! -x "${python_bin}" ]]; then
+    python_bin="$(command -v python3 || true)"
+fi
+if [[ -z "${python_bin}" ]]; then
+    echo "Python interpreter not found" >&2
+    exit 127
+fi
+
+read_env_or_file() {
+    local name="$1"
+    local file_name="${name}_FILE"
+    local value="${!name:-}"
+    local file_value="${!file_name:-}"
+
+    if [[ -n "${value}" && -n "${file_value}" ]]; then
+        echo "Set either ${name} or ${file_name}, not both" >&2
+        exit 2
+    fi
+
+    if [[ -n "${file_value}" ]]; then
+        if [[ ! -f "${file_value}" ]]; then
+            echo "Secret file not found for ${file_name}: ${file_value}" >&2
+            exit 2
+        fi
+        tr -d '\r\n' < "${file_value}"
+        return
+    fi
+
+    printf '%s' "${value}"
+}
+
+runtime_dir="${ODOO_RUNTIME_DIR:-/run/odoo}"
+mkdir -p "${runtime_dir}"
+chmod 0700 "${runtime_dir}"
+
+conn_file="$(mktemp "${runtime_dir}/odoo-init-conn.XXXXXX")"
+pgpass_file="$(mktemp "${runtime_dir}/odoo-init-pgpass.XXXXXX")"
+chmod 0600 "${conn_file}" "${pgpass_file}"
+
+cleanup() {
+    rm -f "${conn_file}" "${pgpass_file}"
+}
+trap cleanup EXIT
+
+export ODOO_INIT_DATABASE="${database}"
+export ODOO_INIT_CONN_FILE="${conn_file}"
+
+"${python_bin}" <<'PY'
+from __future__ import annotations
+
+import configparser
+import os
+from pathlib import Path
+
+
+def normalize(value: str | None) -> str:
+    if value is None:
+        return ""
+    value = value.strip()
+    if value.lower() in {"false", "none", "null"}:
+        return ""
+    return value
+
+
+def option(config: configparser.ConfigParser, key: str) -> str:
+    if config.has_option("options", key):
+        return normalize(config.get("options", key))
+    return ""
+
+
+config = configparser.ConfigParser()
+base_file = os.environ.get("ODOO_BASE_CONFIG_FILE", "")
+if base_file:
+    path = Path(base_file)
+    if not path.is_file():
+        raise SystemExit(f"Base Odoo config file not found: {path}")
+    config.read(path, encoding="utf-8")
+
+values = {
+    "host": os.environ.get("ODOO_DB_HOST") or option(config, "db_host"),
+    "port": os.environ.get("ODOO_DB_PORT") or option(config, "db_port") or "5432",
+    "user": os.environ.get("ODOO_DB_USER") or option(config, "db_user"),
+    "database": os.environ["ODOO_INIT_DATABASE"],
+}
+
+if not values["user"]:
+    values["user"] = values["database"]
+
+conn_file = Path(os.environ["ODOO_INIT_CONN_FILE"])
+conn_file.write_text(
+    "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
+    encoding="utf-8",
+)
+os.chmod(conn_file, 0o600)
+PY
+
+declare -A conn=()
+while IFS='=' read -r key value; do
+    conn["${key}"]="${value}"
+done < "${conn_file}"
+
+db_host="${conn[host]:-}"
+db_port="${conn[port]:-5432}"
+db_user="${conn[user]:-}"
+
+if [[ -z "${db_user}" ]]; then
+    echo "Unable to determine PostgreSQL user for ${database}" >&2
+    exit 2
+fi
+
+db_password="$(read_env_or_file ODOO_DB_PASSWORD)"
+if [[ -n "${db_password}" ]]; then
+    # libpq pgpass format. Escape backslash and colon as required by pgpass.
+    escape_pgpass() {
+        local value="$1"
+        value="${value//\\/\\\\}"
+        value="${value//:/\\:}"
+        printf '%s' "${value}"
+    }
+
+    printf '%s:%s:%s:%s:%s\n' \
+        "$(escape_pgpass "${db_host:-localhost}")" \
+        "$(escape_pgpass "${db_port}")" \
+        "$(escape_pgpass "${database}")" \
+        "$(escape_pgpass "${db_user}")" \
+        "$(escape_pgpass "${db_password}")" > "${pgpass_file}"
+    export PGPASSFILE="${pgpass_file}"
+fi
+unset db_password
+
+psql_args=()
+if [[ -n "${db_host}" ]]; then
+    psql_args+=("-h" "${db_host}")
+fi
+if [[ -n "${db_port}" ]]; then
+    psql_args+=("-p" "${db_port}")
+fi
+psql_args+=("-U" "${db_user}" "-d" "${database}" "-v" "ON_ERROR_STOP=1" "-tAc")
+
+status="$(
+    psql "${psql_args[@]}" "
+        SELECT
+            CASE WHEN to_regclass('public.ir_module_module') IS NULL THEN 'no' ELSE 'yes' END,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                  AND table_type = 'BASE TABLE'
+            ) THEN 'yes' ELSE 'no' END;
+    "
+)"
+
+status="${status//$'\r'/}"
+status="${status//$'\n'/}"
+IFS='|' read -r has_odoo_tables has_any_tables <<< "${status}"
+
+if [[ "${has_odoo_tables}" == "yes" ]]; then
+    echo "Database ${database} already contains Odoo metadata; use odoo-update instead of odoo-init." >&2
+    exit 3
+fi
+
+if [[ "${has_any_tables}" == "yes" ]]; then
+    echo "Database ${database} contains non-system tables but is not an initialized Odoo database; refusing to initialize ambiguous data." >&2
+    exit 4
+fi
+
+cleanup
+trap - EXIT
+unset ODOO_INIT_DATABASE ODOO_INIT_CONN_FILE PGPASSFILE
+
+exec odoo-run -d "${database}" -i "${modules}" --stop-after-init --without-demo=all "$@"
