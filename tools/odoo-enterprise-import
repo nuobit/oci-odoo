@@ -328,8 +328,6 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
     plan = report["import_plan"]["summary"]
     removal_modules = report["import_plan"]["actions"]["remove"]
     warnings: list[str] = []
-    if not report["community_lock_refresh_confirmed"]:
-        warnings.append("Community lock refresh was not confirmed for this import")
     if counts["missing_community_modules"]:
         warnings.append(
             f"{counts['missing_community_modules']} locked Community module(s) are missing from the download"
@@ -386,6 +384,37 @@ def print_human_summary(summary: dict[str, Any]) -> None:
     print()
 
 
+def confirm_enterprise_import(args: argparse.Namespace, community_src: Path) -> bool:
+    if args.yes:
+        return True
+
+    message = "\n".join(
+        [
+            "Enterprise import check",
+            "-----------------------",
+            f"Community source: {community_src}",
+            "",
+            "This import will use the Community source passed with --community-src as the reference.",
+            "Every downloaded Odoo module that is not present in that Community source will be imported as Enterprise.",
+            "If that Community source is stale, Community modules may be imported into the Enterprise mirror.",
+            "",
+        ]
+    )
+
+    if not sys.stdin.isatty():
+        print(message, file=sys.stderr)
+        print(
+            "ERROR: non-interactive Enterprise import requires --yes to acknowledge this rule.",
+            file=sys.stderr,
+        )
+        return False
+
+    print(message, file=sys.stderr)
+    print("Continue Enterprise import? [y/N] ", end="", file=sys.stderr, flush=True)
+    answer = sys.stdin.readline().strip().lower()
+    return answer in {"y", "yes"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Dry-run an Odoo Enterprise ZIP/folder import against locked Community source.",
@@ -426,9 +455,9 @@ def parse_args() -> argparse.Namespace:
         help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
     )
     parser.add_argument(
-        "--confirm-community-refresh",
+        "--yes",
         action="store_true",
-        help="Confirm that repos.lock.yaml was refreshed for the Community source before this import",
+        help="Do not prompt before treating --community-src as the Enterprise import reference",
     )
     return parser.parse_args()
 
@@ -453,6 +482,10 @@ def main() -> int:
         current_src = source_root(args.current_src.resolve())
         if not current_src.is_dir():
             raise SystemExit(f"current source not found: {current_src}")
+
+    if not confirm_enterprise_import(args, community_src):
+        print("Enterprise import aborted.", file=sys.stderr)
+        return 5
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
         if args.zip_path:
@@ -504,10 +537,6 @@ def main() -> int:
             current_root_path=current_src,
         )
         recommendations: list[str] = []
-        if not args.confirm_community_refresh:
-            recommendations.append(
-                "Run lock-repos --refresh ./odoo before Enterprise import, then rerun with --confirm-community-refresh."
-            )
         if missing_community:
             recommendations.extend(
                 [
@@ -543,7 +572,7 @@ def main() -> int:
             "community_dest": args.community_dest,
             "community_lock_revision": community_revision,
             "community_worktree_head": community_head,
-            "community_lock_refresh_confirmed": args.confirm_community_refresh,
+            "community_source_used_as_import_reference": True,
             "counts": {
                 "community_modules": len(community_modules),
                 "download_modules": len(download_modules),
@@ -569,13 +598,6 @@ def main() -> int:
             print_human_summary(report["human_summary"])
         print(json.dumps(report, indent=2, sort_keys=True))
 
-        if not args.confirm_community_refresh:
-            print(
-                "ERROR: Community lock refresh is not confirmed. Run lock-repos --refresh ./odoo "
-                "before importing Enterprise, then rerun with --confirm-community-refresh.",
-                file=sys.stderr,
-            )
-            return 5
         if missing_community:
             print(
                 "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "

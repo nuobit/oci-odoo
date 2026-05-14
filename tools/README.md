@@ -57,7 +57,7 @@ tools/odoo-enterprise-import \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
-  --confirm-community-refresh \
+  --yes \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -69,7 +69,8 @@ tools/odoo-enterprise-import \
   --download-src /path/to/extracted/odoo-enterprise-download \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
-  --current-src /path/to/private/odoo-enterprise
+  --current-src /path/to/private/odoo-enterprise \
+  --yes
 ```
 
 The report records three separate identities:
@@ -84,18 +85,21 @@ locked revision. Matching Community modules that drift byte-for-byte are
 reported as warnings because Odoo controls the ZIP generation and it may not
 match our current Community lock exactly.
 
-The normal Enterprise import workflow requires refreshing the Community lock
+The normal safe Enterprise import workflow is to refresh the Community lock
 first:
 
 ```bash
 tools/lock-repos --refresh ./odoo
 ```
 
-Then materialize/use that locked Community source and run this tool with
-`--confirm-community-refresh`. The importer intentionally trusts the refreshed
-Community lock as the source of truth: every downloaded module absent from that
-Community checkout is treated as Enterprise. No manual module-classification
-file is used.
+Then materialize/use that locked Community source. The importer intentionally
+trusts the Community source passed with `--community-src` as the source of
+truth: every downloaded module absent from that Community checkout is treated as
+Enterprise. No manual module-classification file is used.
+
+When run interactively, the command prints this Enterprise import rule and asks
+for confirmation before continuing. In scripts/CI, pass `--yes` to acknowledge
+the rule explicitly and avoid a prompt.
 
 The tool still reads each Enterprise module manifest with `ast.literal_eval`
 and reports the manifest license as useful metadata, but license is no longer
