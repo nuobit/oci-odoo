@@ -344,6 +344,67 @@ def build_import_plan(
     }
 
 
+def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
+    counts = report["counts"]
+    plan = report["import_plan"]["summary"]
+    warnings: list[str] = []
+    if counts["missing_community_modules"]:
+        warnings.append(
+            f"{counts['missing_community_modules']} locked Community module(s) are missing from the download"
+        )
+    if counts["drifted_community_modules"]:
+        warnings.append(
+            f"{counts['drifted_community_modules']} matching Community module(s) drift byte-for-byte"
+        )
+    if counts["candidate_enterprise_review_modules"]:
+        warnings.append(
+            f"{counts['candidate_enterprise_review_modules']} candidate module(s) need manual review"
+        )
+    if plan["remove"]:
+        warnings.append(f"{plan['remove']} current module(s) are planned as removal")
+    if report["community_worktree_head"] and report["community_worktree_head"] != report["community_lock_revision"]:
+        warnings.append("Community checkout HEAD differs from repos.lock.yaml revision")
+
+    return {
+        "community_modules": counts["community_modules"],
+        "download_modules": counts["download_modules"],
+        "current_modules": counts["current_modules"],
+        "confirmed_enterprise_modules": counts["confirmed_enterprise_modules"],
+        "candidate_review_modules": counts["candidate_enterprise_review_modules"],
+        "plan": {
+            "add": plan["add"],
+            "update": plan["update"],
+            "remove": plan["remove"],
+            "unchanged": plan["unchanged"],
+            "review_required": plan["review_required"],
+        },
+        "warnings": warnings,
+    }
+
+
+def print_human_summary(summary: dict[str, Any]) -> None:
+    plan = summary["plan"]
+    print("Enterprise import dry-run summary")
+    print("---------------------------------")
+    print(f"Community modules:            {summary['community_modules']}")
+    print(f"Downloaded modules:           {summary['download_modules']}")
+    print(f"Current modules:              {summary['current_modules']}")
+    print(f"Confirmed Enterprise modules: {summary['confirmed_enterprise_modules']}")
+    print(f"Candidate modules to review:  {summary['candidate_review_modules']}")
+    print(
+        "Plan: add {add}, update {update}, remove {remove}, unchanged {unchanged}, review {review_required}".format(
+            **plan
+        )
+    )
+    if summary["warnings"]:
+        print("Warnings:")
+        for warning in summary["warnings"]:
+            print(f"  - {warning}")
+    else:
+        print("Warnings: none")
+    print()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Dry-run an Odoo Enterprise ZIP/folder import against locked Community source.",
@@ -368,6 +429,11 @@ def parse_args() -> argparse.Namespace:
         help="Destination key in repos.lock.yaml for Odoo Community (default: ./odoo)",
     )
     parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="Print only JSON to stdout, without the human summary",
+    )
     parser.add_argument(
         "--current-src",
         type=Path,
@@ -521,10 +587,13 @@ def main() -> int:
             "import_plan": import_plan,
             "recommendations": recommendations,
         }
+        report["human_summary"] = build_human_summary(report)
 
         if args.report_json:
             write_report(args.report_json, report)
 
+        if not args.json_only:
+            print_human_summary(report["human_summary"])
         print(json.dumps(report, indent=2, sort_keys=True))
 
         if missing_community:

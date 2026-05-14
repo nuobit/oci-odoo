@@ -105,6 +105,9 @@ the report also contains an `import_plan` with dry-run actions:
 The plan is still review-only. In particular, removals and candidates without a
 proprietary manifest license must be reviewed before any future `--apply` mode.
 
+By default, the command prints a short human summary followed by the full JSON
+report. Use `--json-only` when stdout must be machine-parseable JSON only.
+
 The old local proof of concept for downloading from odoo.com proved the
 separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
 check, and following the CDN payload link when Odoo returns an HTML download
