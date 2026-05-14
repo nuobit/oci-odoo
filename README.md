@@ -110,6 +110,22 @@ before importing Enterprise, refresh Odoo Community, then treat every downloaded
 module absent from that refreshed Community checkout as Enterprise. No separate
 manual module-classification file is used.
 
+Why Community is authoritative: Odoo Enterprise source archives are mixed
+acquisition payloads. They include Odoo Community modules plus Enterprise-only
+modules. Community modules are identified by their presence in the official
+Odoo Community Git repository; the archive copy does not override the official
+Community repository. The importer therefore classifies by module name against
+the refreshed Community checkout: if a module exists in official Community, it
+is Community even if the Enterprise archive also contains a copy.
+
+This rule was validated on 2026-05-14 with `l10n_jo_edi`: the Enterprise
+archive copy drifted from the refreshed Community checkout, but the four
+drifting files were byte-for-byte identical to the parent of Community commit
+`1601de2198ed...` and different from the current Community commit. The cause
+was an archive generated with an embedded Community copy just before a new
+Community fix landed. This confirms the rule: refresh Community first, let
+Community win, and accept reviewed archive drift explicitly when needed.
+
 ## Technical Map
 
 The high-level implementation is:

@@ -199,6 +199,36 @@ importer is an Enterprise tool, so the short flag name is enough; the error text
 spells out that the drift is the archive's embedded Community copy differing
 from the freshly pinned official Odoo Community source.
 
+When drift appears, the first response is to refresh Community and rerun. If
+drift remains, review the affected module as embedded-Community drift, not as a
+candidate Enterprise module. A strong review pattern is:
+
+1. compare the archive module against the refreshed Community module;
+2. list the files that differ;
+3. inspect the latest official Community commit(s) touching those files;
+4. compare archive file hashes against the parent of the latest Community
+   commit.
+
+The 2026-05-14 `l10n_jo_edi` drift validated this model. The Enterprise archive
+files for `models/account_edi_xml_ubl_21_jo.py` and three XML test fixtures
+matched the parent of Community commit `1601de2198ed...`, while refreshed
+Community contained the newer fix. Therefore the module remained Community and
+the import continued with `--allow-drift`.
+
+When Community source has Git history, drift errors include a per-module
+diagnosis block. The diagnostic is informational only; it never accepts drift
+automatically. Possible diagnosis values:
+
+- `archive_lag_confirmed`: the archive copy matches the Community state
+  immediately before a newer Community commit touching the drifted file(s);
+- `unexplained_drift`: the archive copy does not match the checked recent
+  Community ancestors;
+- `limited_context`: the Community source has no Git history available, so the
+  tool can list files and timestamps but cannot inspect commits.
+
+All diagnostic timestamps are UTC ISO 8601 values ending in `Z`. The JSON report
+stores this information under `enterprise_drift_details`.
+
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.
 

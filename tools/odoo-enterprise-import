@@ -53,6 +53,17 @@ class ModuleInfo:
     license: str | None
 
 
+def isoformat_utc(timestamp: float | int | None) -> str | None:
+    if timestamp is None:
+        return None
+    return (
+        datetime.fromtimestamp(timestamp, timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -124,6 +135,102 @@ def git_head(path: Path) -> str | None:
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
     return result.stdout.strip()
+
+
+def git_commit_info(path: Path, revision: str | None) -> dict[str, Any] | None:
+    if not revision:
+        return None
+    try:
+        output = run_git(
+            path,
+            "show",
+            "-s",
+            "--format=%H%x09%ct%x09%cI%x09%s",
+            revision,
+            capture=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    if not output:
+        return None
+    return parse_git_commit_line(output.splitlines()[0])
+
+
+def parse_git_commit_line(line: str) -> dict[str, Any] | None:
+    parts = line.split("\t", 3)
+    if len(parts) != 4:
+        return None
+    sha, timestamp, date, subject = parts
+    try:
+        timestamp_int = int(timestamp)
+    except ValueError:
+        return None
+    return {
+        "sha": sha,
+        "short_sha": sha[:12],
+        "timestamp": timestamp_int,
+        "date": date,
+        "subject": subject,
+    }
+
+
+def git_log_for_paths_after(
+    path: Path,
+    rel_paths: list[str],
+    *,
+    after_timestamp: int,
+    max_scan: int = 200,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not rel_paths:
+        return [], False
+    try:
+        output = run_git(
+            path,
+            "log",
+            f"--max-count={max_scan}",
+            "--format=%H%x09%ct%x09%cI%x09%s",
+            "--",
+            *rel_paths,
+            capture=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return [], False
+
+    commits: list[dict[str, Any]] = []
+    scanned = 0
+    reached_before_timestamp = False
+    for line in output.splitlines():
+        info = parse_git_commit_line(line)
+        if not info:
+            continue
+        scanned += 1
+        if info["timestamp"] > after_timestamp:
+            commits.append(info)
+            continue
+        reached_before_timestamp = True
+        break
+    return list(reversed(commits)), bool(output.splitlines()) and not reached_before_timestamp and scanned >= max_scan
+
+
+def git_commit_parents(path: Path, commit: str) -> list[str]:
+    try:
+        output = run_git(path, "rev-list", "--parents", "-n", "1", commit, capture=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+    parts = output.split()
+    return parts[1:] if len(parts) > 1 else []
+
+
+def git_blob_sha256(path: Path, revision: str, rel_path: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "show", f"{revision}:{rel_path}"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def run_git(path: Path, *args: str, capture: bool = False) -> str:
@@ -246,6 +353,159 @@ def collect_modules(source: Path) -> dict[str, ModuleInfo]:
         )
         raise SystemExit(f"Duplicate module names found in {source}:\n{details}")
     return modules
+
+
+def collect_module_files(path: Path) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    for item in path.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(path)
+        if any(part in IGNORED_DIRS for part in rel.parts):
+            continue
+        if item.suffix in IGNORED_SUFFIXES:
+            continue
+        files[rel.as_posix()] = item
+    return files
+
+
+def build_drift_file_details(download_module: ModuleInfo, community_module: ModuleInfo) -> list[dict[str, Any]]:
+    download_files = collect_module_files(download_module.path)
+    community_files = collect_module_files(community_module.path)
+    drift_files: list[dict[str, Any]] = []
+    for rel_path in sorted(set(download_files) | set(community_files)):
+        download_file = download_files.get(rel_path)
+        community_file = community_files.get(rel_path)
+        download_digest = sha256_file(download_file) if download_file else None
+        community_digest = sha256_file(community_file) if community_file else None
+        if download_digest == community_digest:
+            continue
+        if download_file and community_file:
+            status = "modified"
+        elif download_file:
+            status = "archive_only"
+        else:
+            status = "community_only"
+        mtime = int(download_file.stat().st_mtime) if download_file else None
+        drift_files.append(
+            {
+                "path": rel_path,
+                "status": status,
+                "archive_sha256": download_digest,
+                "community_sha256": community_digest,
+                "archive_mtime": isoformat_utc(mtime),
+                "archive_mtime_timestamp": mtime,
+            }
+        )
+    return drift_files
+
+
+def module_git_path(community_src: Path, community_module: ModuleInfo, module_relative_path: str) -> str:
+    return (community_module.path.relative_to(community_src) / module_relative_path).as_posix()
+
+
+def archive_matches_git_revision(
+    *,
+    community_src: Path,
+    community_module: ModuleInfo,
+    drift_files: list[dict[str, Any]],
+    revision: str,
+) -> bool:
+    for drift_file in drift_files:
+        rel_path = module_git_path(community_src, community_module, drift_file["path"])
+        git_digest = git_blob_sha256(community_src, revision, rel_path)
+        if drift_file["archive_sha256"] != git_digest:
+            return False
+    return True
+
+
+def build_drift_details(
+    *,
+    download_modules: dict[str, ModuleInfo],
+    community_modules: dict[str, ModuleInfo],
+    drift_names: list[str],
+    community_src: Path,
+    community_revision: str,
+    community_head: str | None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    has_git_context = community_head is not None
+    current_info = git_commit_info(community_src, community_head or community_revision) if has_git_context else None
+
+    for name in sorted(drift_names):
+        download_module = download_modules[name]
+        community_module = community_modules[name]
+        drift_files = build_drift_file_details(download_module, community_module)
+        archive_timestamps = [
+            item["archive_mtime_timestamp"]
+            for item in drift_files
+            if item["archive_mtime_timestamp"] is not None
+        ]
+        archive_latest_timestamp = max(archive_timestamps) if archive_timestamps else None
+        archive_latest_mtime = isoformat_utc(archive_latest_timestamp)
+        module_detail: dict[str, Any] = {
+            "diagnosis": "limited_context",
+            "diagnosis_reason": "Community source has no Git history available for local commit analysis.",
+            "archive_latest_mtime": archive_latest_mtime,
+            "archive_latest_mtime_timestamp": archive_latest_timestamp,
+            "community_current": current_info,
+            "drifted_files": drift_files,
+            "commits_after_archive_timestamp": [],
+            "commits_after_archive_timestamp_truncated": False,
+            "matching_ancestor_commit": None,
+            "matching_parent_of_commit": None,
+        }
+
+        if not has_git_context:
+            details[name] = module_detail
+            continue
+        if archive_latest_timestamp is None:
+            module_detail["diagnosis_reason"] = "No archive file timestamp was available for drift diagnosis."
+            details[name] = module_detail
+            continue
+
+        rel_paths = [
+            module_git_path(community_src, community_module, drift_file["path"])
+            for drift_file in drift_files
+        ]
+        commits_after, truncated = git_log_for_paths_after(
+            community_src,
+            rel_paths,
+            after_timestamp=archive_latest_timestamp,
+        )
+        module_detail["commits_after_archive_timestamp"] = commits_after
+        module_detail["commits_after_archive_timestamp_truncated"] = truncated
+
+        for commit in commits_after:
+            for parent in git_commit_parents(community_src, commit["sha"]):
+                if archive_matches_git_revision(
+                    community_src=community_src,
+                    community_module=community_module,
+                    drift_files=drift_files,
+                    revision=parent,
+                ):
+                    module_detail["diagnosis"] = "archive_lag_confirmed"
+                    module_detail["diagnosis_reason"] = (
+                        "The archive copy matches the Community state immediately before "
+                        "a newer Community commit touching the drifted file(s)."
+                    )
+                    module_detail["matching_ancestor_commit"] = git_commit_info(community_src, parent) or {
+                        "sha": parent,
+                        "short_sha": parent[:12],
+                    }
+                    module_detail["matching_parent_of_commit"] = commit
+                    break
+            if module_detail["diagnosis"] == "archive_lag_confirmed":
+                break
+
+        if module_detail["diagnosis"] != "archive_lag_confirmed":
+            module_detail["diagnosis"] = "unexplained_drift"
+            module_detail["diagnosis_reason"] = (
+                "The archive copy did not match a parent of the Community commits "
+                "found after the archive timestamp."
+            )
+        details[name] = module_detail
+    return details
 
 
 def safe_relative_to(destination: Path, member_name: str) -> None:
@@ -481,6 +741,112 @@ def format_modules_for_error(module_names: list[str], *, limit: int = 50) -> str
     return ", ".join(visible) + suffix
 
 
+def format_commit_for_error(commit: dict[str, Any] | None) -> str:
+    if not commit:
+        return "not available"
+    short_sha = commit.get("short_sha") or str(commit.get("sha", ""))[:12]
+    date = commit.get("date", "date not available")
+    subject = commit.get("subject")
+    if subject:
+        return f"{short_sha} {date}\n    {subject}"
+    return f"{short_sha} {date}"
+
+
+def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
+    if not drift_details:
+        return ""
+
+    lines = [
+        "",
+        "Drift diagnosis",
+        "---------------",
+    ]
+    for module_name, detail in sorted(drift_details.items()):
+        lines.extend(
+            [
+                "",
+                f"Affected module: {module_name}",
+                f"  diagnosis: {detail['diagnosis']}",
+                f"  reason: {detail['diagnosis_reason']}",
+                "  archive embedded Community copy:",
+                f"    latest drifted file timestamp: {detail['archive_latest_mtime'] or 'not available'}",
+                "  pinned official Community:",
+                f"    current commit: {format_commit_for_error(detail.get('community_current'))}",
+            ]
+        )
+
+        commits_after = detail.get("commits_after_archive_timestamp") or []
+        if commits_after:
+            lines.append("  Community commits after archive timestamp touching drifted files:")
+            for commit in commits_after:
+                lines.append(f"    - {format_commit_for_error(commit)}")
+            if detail.get("commits_after_archive_timestamp_truncated"):
+                lines.append("    - ... additional commits omitted by the diagnostic safety limit")
+        else:
+            lines.append("  Community commits after archive timestamp touching drifted files: none found")
+
+        if detail.get("matching_ancestor_commit") and detail.get("matching_parent_of_commit"):
+            lines.extend(
+                [
+                    "  archive copy matches:",
+                    (
+                        "    parent of "
+                        f"{detail['matching_parent_of_commit']['short_sha']}: "
+                        f"{detail['matching_ancestor_commit']['short_sha']}"
+                    ),
+                ]
+            )
+
+        lines.append("  drifted files:")
+        for drift_file in detail["drifted_files"]:
+            lines.append(f"    - {drift_file['path']} ({drift_file['status']})")
+
+        if detail["diagnosis"] == "archive_lag_confirmed":
+            lines.extend(
+                [
+                    "  conclusion:",
+                    "    This looks like the Enterprise archive was generated before a newer",
+                    "    Community fix was merged. Community remains authoritative. The",
+                    "    drifted module will not be imported into the Enterprise mirror.",
+                ]
+            )
+        elif detail["diagnosis"] == "limited_context":
+            lines.extend(
+                [
+                    "  conclusion:",
+                    "    Automatic Git history diagnosis could not be performed. Review the",
+                    "    drift manually before using --allow-drift.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "  conclusion:",
+                    "    The drift was not explained by a recent Community ancestor match.",
+                    "    Review manually before using --allow-drift.",
+                ]
+            )
+
+    return "\n".join(lines)
+
+
+def format_drift_error(report: dict[str, Any]) -> str:
+    affected = format_modules_for_error(sorted(report["enterprise_drift_modules"]))
+    return "\n".join(
+        [
+            "ERROR: Enterprise archive drift detected.",
+            "",
+            "The archive embeds Community module copies that differ from the freshly",
+            "pinned official Odoo Community source.",
+            "",
+            f"Affected modules: {affected}",
+            format_drift_details_for_error(report.get("enterprise_drift_details", {})),
+            "",
+            "Rerun with --allow-drift if you accept this reviewed drift.",
+        ]
+    )
+
+
 def commit_message_for(action: str, module: str, date: str) -> str:
     if action == "add":
         return f"[ADD] {module}: import from Odoo Enterprise {date}"
@@ -522,6 +888,7 @@ def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
         "missing_community_modules": report["missing_community_modules"],
         "enterprise_drift_modules": report["enterprise_drift_modules"],
         "drifted_community_modules": report["drifted_community_modules"],
+        "enterprise_drift_details": report["enterprise_drift_details"],
         "enterprise_modules": report["enterprise_modules"],
         "enterprise_details": report["enterprise_details"],
         "import_plan": report["import_plan"],
@@ -744,6 +1111,14 @@ def main() -> int:
             for name in matched_community
             if community_modules[name].digest != download_modules[name].digest
         ]
+        enterprise_drift_details = build_drift_details(
+            download_modules=download_modules,
+            community_modules=community_modules,
+            drift_names=enterprise_drift,
+            community_src=community_src,
+            community_revision=community_revision,
+            community_head=community_head,
+        )
         enterprise_details = {
             name: {
                 "license": download_modules[name].license,
@@ -815,6 +1190,7 @@ def main() -> int:
             "missing_community_modules": missing_community,
             "enterprise_drift_modules": sorted(enterprise_drift),
             "drifted_community_modules": sorted(enterprise_drift),
+            "enterprise_drift_details": enterprise_drift_details,
             "enterprise_modules": enterprise_modules,
             "enterprise_details": enterprise_details,
             "import_plan": import_plan,
@@ -831,14 +1207,7 @@ def main() -> int:
                 )
                 return 2
             if enterprise_drift and not args.allow_drift:
-                print(
-                    "ERROR: Enterprise archive drift detected. The archive embeds Community module copies "
-                    "that differ from the freshly pinned official Odoo Community source. "
-                    "Refresh Odoo Community with lock-repos --refresh ./odoo and retry. "
-                    "If reviewed and accepted, rerun with --allow-drift. "
-                    f"Affected modules: {format_modules_for_error(sorted(enterprise_drift))}",
-                    file=sys.stderr,
-                )
+                print(format_drift_error(report), file=sys.stderr)
                 return 3
             if community_head and community_head != community_revision and not args.allow_community_head_mismatch:
                 print(
@@ -870,14 +1239,7 @@ def main() -> int:
             )
             return 2
         if enterprise_drift and not args.allow_drift:
-            print(
-                "ERROR: Enterprise archive drift detected. The archive embeds Community module copies "
-                "that differ from the freshly pinned official Odoo Community source. "
-                "Refresh Odoo Community with lock-repos --refresh ./odoo and retry. "
-                "If reviewed and accepted, rerun with --allow-drift. "
-                f"Affected modules: {format_modules_for_error(sorted(enterprise_drift))}",
-                file=sys.stderr,
-            )
+            print(format_drift_error(report), file=sys.stderr)
             return 3
         if enterprise_drift:
             print(
