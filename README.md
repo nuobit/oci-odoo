@@ -24,6 +24,9 @@ Odyssey makes the release contract explicit:
   refresh is explicitly requested;
 - OCA, customer, Enterprise, and third-party addon sources are materialized once
   during the derived-image build flow;
+- Enterprise can be used without distributing Enterprise source: a valid
+  operator imports an Odoo Enterprise ZIP into a private Git mirror/cache, then
+  Odyssey consumes that private Git source like any other locked repository;
 - the generated addon path is baked into the final image;
 - build-only tools stay out of the runtime image;
 - system build/runtime packages are declared separately;
@@ -64,6 +67,43 @@ ConfigMaps, credentials are mounted as Secret files, filestore data lives in
 PVCs, registry access uses `imagePullSecrets`, and generated runtime config
 stays under `/run/odoo` as ephemeral process state. Addon code belongs in the
 image, not in mutable runtime volumes.
+
+## Enterprise-ready Without Redistributing Enterprise
+
+Odyssey is designed to support Odoo Enterprise deployments without publishing
+or embedding Enterprise source in this public repository.
+
+The intended Enterprise flow is:
+
+```text
+valid Odoo subscription
+  -> Odoo Enterprise ZIP download
+  -> import/classification tool
+  -> private Enterprise Git mirror/cache
+  -> derived image repos.yaml
+  -> derived image repos.lock.yaml
+  -> final OCI image
+```
+
+The Enterprise ZIP is acquisition input only. It has a file hash, not a Git
+commit. The import tool records that ZIP hash, compares against the exact
+Community commit used by the deployment, keeps only Enterprise source, and
+commits the result to a private Git repository controlled by the deployment
+operator/customer.
+
+After that import, normal image builds never download from Odoo's web portal
+and never see the subscription code. They consume only Git sources pinned in
+`repos.lock.yaml`.
+
+Enterprise import commits should follow Odoo addon repository discipline:
+
+```text
+one commit per added/changed/removed Enterprise module
+one final root commit with import metadata/report
+```
+
+This keeps Enterprise source private while preserving the same reproducibility,
+reviewability, and lock-file model as Community/OCA/customer addons.
 
 ## Technical Map
 
