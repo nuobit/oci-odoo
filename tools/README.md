@@ -56,19 +56,19 @@ tools/odoo-enterprise-import \
   --zip /path/to/odoo-enterprise-17.zip \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
-  --enterprise-src /path/to/private/odoo-enterprise \
+  --current-src /path/to/private/odoo-enterprise \
   --report-json workdir/enterprise-import-report.json
 ```
 
 If the Odoo Enterprise download has already been extracted, use
-`--enterprise-download-src` instead of `--zip`:
+`--download-src` instead of `--zip`:
 
 ```bash
 tools/odoo-enterprise-import \
-  --enterprise-download-src /path/to/extracted/odoo-enterprise-download \
+  --download-src /path/to/extracted/odoo-enterprise-download \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
-  --enterprise-src /path/to/private/odoo-enterprise
+  --current-src /path/to/private/odoo-enterprise
 ```
 
 The report records three separate identities:
@@ -91,8 +91,8 @@ proprietary Odoo license such as `OEEL-1` or `OPL-1` are also reported under
 `confirmed_enterprise_modules`; candidates without a proprietary license remain
 under `candidate_enterprise_review_modules` and need manual review.
 
-If `--enterprise-src` points to an existing private/internal Enterprise source
-repository, the report also contains an `import_plan` with dry-run actions:
+If `--current-src` points to the current private/internal source repository,
+the report also contains an `import_plan` with dry-run actions:
 
 - `add`: candidate modules not present in the current Enterprise source;
 - `update`: candidate modules present in both places but with different tree
