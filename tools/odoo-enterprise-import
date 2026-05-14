@@ -250,28 +250,28 @@ def module_relative_path(module: ModuleInfo, source: Path) -> str:
 
 def build_import_plan(
     *,
-    source_modules: dict[str, ModuleInfo],
-    target_modules: dict[str, ModuleInfo],
+    download_modules: dict[str, ModuleInfo],
+    current_modules: dict[str, ModuleInfo],
     candidate_names: list[str],
     confirmed_names: list[str],
     review_names: list[str],
-    source_root_path: Path,
-    target_root_path: Path | None,
+    download_root_path: Path,
+    enterprise_root_path: Path | None,
 ) -> dict[str, Any]:
-    source_names = set(candidate_names)
-    target_names = set(target_modules)
-    add = sorted(source_names - target_names)
-    common = sorted(source_names & target_names)
-    update = sorted(name for name in common if source_modules[name].digest != target_modules[name].digest)
-    unchanged = sorted(name for name in common if source_modules[name].digest == target_modules[name].digest)
-    remove = sorted(target_names - source_names)
+    download_names = set(candidate_names)
+    current_names = set(current_modules)
+    add = sorted(download_names - current_names)
+    common = sorted(download_names & current_names)
+    update = sorted(name for name in common if download_modules[name].digest != current_modules[name].digest)
+    unchanged = sorted(name for name in common if download_modules[name].digest == current_modules[name].digest)
+    remove = sorted(current_names - download_names)
     confirmed_set = set(confirmed_names)
     review_set = set(review_names)
 
     action_details: dict[str, dict[str, Any]] = {}
     for name in add + update + unchanged:
-        source_module = source_modules[name]
-        target_module = target_modules.get(name)
+        download_module = download_modules[name]
+        current_module = current_modules.get(name)
         if name in confirmed_set:
             classification = "confirmed_enterprise"
         elif name in review_set:
@@ -286,36 +286,36 @@ def build_import_plan(
         action_details[name] = {
             "action": action,
             "classification": classification,
-            "source_digest": source_module.digest,
-            "target_digest": target_module.digest if target_module else None,
-            "source_license": source_module.license,
-            "target_license": target_module.license if target_module else None,
-            "source_relative_path": module_relative_path(source_module, source_root_path),
-            "target_relative_path": (
-                module_relative_path(target_module, target_root_path)
-                if target_module and target_root_path
+            "download_digest": download_module.digest,
+            "current_digest": current_module.digest if current_module else None,
+            "download_license": download_module.license,
+            "current_license": current_module.license if current_module else None,
+            "download_relative_path": module_relative_path(download_module, download_root_path),
+            "current_relative_path": (
+                module_relative_path(current_module, enterprise_root_path)
+                if current_module and enterprise_root_path
                 else None
             ),
         }
 
     for name in remove:
-        target_module = target_modules[name]
+        current_module = current_modules[name]
         action_details[name] = {
             "action": "remove",
-            "classification": "target_only",
-            "source_digest": None,
-            "target_digest": target_module.digest,
-            "source_license": None,
-            "target_license": target_module.license,
-            "source_relative_path": None,
-            "target_relative_path": module_relative_path(target_module, target_root_path)
-            if target_root_path
+            "classification": "current_only",
+            "download_digest": None,
+            "current_digest": current_module.digest,
+            "download_license": None,
+            "current_license": current_module.license,
+            "download_relative_path": None,
+            "current_relative_path": module_relative_path(current_module, enterprise_root_path)
+            if enterprise_root_path
             else None,
         }
 
     review_required = sorted(set(review_names) | set(remove))
     return {
-        "target_source": str(target_root_path) if target_root_path else None,
+        "enterprise_source": str(enterprise_root_path) if enterprise_root_path else None,
         "summary": {
             "add": len(add),
             "update": len(update),
@@ -350,7 +350,11 @@ def parse_args() -> argparse.Namespace:
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--zip", dest="zip_path", type=Path, help="Enterprise ZIP downloaded from Odoo")
-    source.add_argument("--enterprise-src", type=Path, help="Already extracted Enterprise download root")
+    source.add_argument(
+        "--enterprise-download-src",
+        type=Path,
+        help="Already extracted Odoo Enterprise download root",
+    )
     parser.add_argument("--community-src", type=Path, required=True, help="Local Odoo Community checkout/root")
     parser.add_argument(
         "--repos-lock",
@@ -365,9 +369,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
     parser.add_argument(
-        "--enterprise-target-src",
+        "--enterprise-src",
         type=Path,
-        help="Existing private Enterprise mirror/addons root to compare against for an add/update/remove plan",
+        help="Existing private/internal Enterprise source root to compare against for an add/update/remove plan",
     )
     parser.add_argument(
         "--allow-community-head-mismatch",
@@ -389,14 +393,14 @@ def main() -> int:
 
     community_revision = locked_community_revision(lock_path, args.community_dest)
     community_head = git_head(community_src)
-    target_enterprise_src = None
+    enterprise_src = None
     zip_sha256 = None
     zip_size = None
 
-    if args.enterprise_target_src:
-        target_enterprise_src = source_root(args.enterprise_target_src.resolve())
-        if not target_enterprise_src.is_dir():
-            raise SystemExit(f"enterprise target source not found: {target_enterprise_src}")
+    if args.enterprise_src:
+        enterprise_src = source_root(args.enterprise_src.resolve())
+        if not enterprise_src.is_dir():
+            raise SystemExit(f"enterprise source not found: {enterprise_src}")
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
         if args.zip_path:
@@ -405,19 +409,19 @@ def main() -> int:
                 raise SystemExit(f"zip not found: {zip_path}")
             zip_sha256 = sha256_file(zip_path)
             zip_size = zip_path.stat().st_size
-            enterprise_src = extract_zip(zip_path, Path(tmp_name))
+            enterprise_download_src = extract_zip(zip_path, Path(tmp_name))
         else:
-            enterprise_src = source_root(args.enterprise_src.resolve())
+            enterprise_download_src = source_root(args.enterprise_download_src.resolve())
 
-        if not enterprise_src.is_dir():
-            raise SystemExit(f"enterprise source not found: {enterprise_src}")
+        if not enterprise_download_src.is_dir():
+            raise SystemExit(f"enterprise download source not found: {enterprise_download_src}")
 
         community_modules = collect_modules(community_src)
-        download_modules = collect_modules(enterprise_src)
+        download_modules = collect_modules(enterprise_download_src)
         if not community_modules:
             raise SystemExit(f"No Community modules found in {community_src}")
         if not download_modules:
-            raise SystemExit(f"No downloaded modules found in {enterprise_src}")
+            raise SystemExit(f"No downloaded modules found in {enterprise_download_src}")
 
         community_names = set(community_modules)
         download_names = set(download_modules)
@@ -433,7 +437,7 @@ def main() -> int:
             name: {
                 "license": download_modules[name].license,
                 "license_is_proprietary": is_proprietary_license(download_modules[name].license),
-                "relative_path": download_modules[name].path.relative_to(enterprise_src).as_posix(),
+                "relative_path": download_modules[name].path.relative_to(enterprise_download_src).as_posix(),
             }
             for name in candidate_enterprise
         }
@@ -443,15 +447,15 @@ def main() -> int:
         review_candidates = sorted(
             name for name, details in candidate_details.items() if not details["license_is_proprietary"]
         )
-        target_modules = collect_modules(target_enterprise_src) if target_enterprise_src else {}
+        current_enterprise_modules = collect_modules(enterprise_src) if enterprise_src else {}
         import_plan = build_import_plan(
-            source_modules=download_modules,
-            target_modules=target_modules,
+            download_modules=download_modules,
+            current_modules=current_enterprise_modules,
             candidate_names=candidate_enterprise,
             confirmed_names=confirmed_enterprise,
             review_names=review_candidates,
-            source_root_path=enterprise_src,
-            target_root_path=target_enterprise_src,
+            download_root_path=enterprise_download_src,
+            enterprise_root_path=enterprise_src,
         )
         recommendations: list[str] = []
         if missing_community:
@@ -483,7 +487,7 @@ def main() -> int:
             )
         if import_plan["actions"]["remove"]:
             recommendations.append(
-                "Target-only modules are planned as removals, but each removal needs review before apply."
+                "Current Enterprise-only modules are planned as removals, but each removal needs review before apply."
             )
 
         report = {
@@ -491,7 +495,8 @@ def main() -> int:
             "mode": "dry-run",
             "zip_sha256": zip_sha256,
             "zip_size": zip_size,
-            "enterprise_source": str(enterprise_src),
+            "enterprise_download_source": str(enterprise_download_src),
+            "enterprise_source": str(enterprise_src) if enterprise_src else None,
             "community_source": str(community_src),
             "community_dest": args.community_dest,
             "community_lock_revision": community_revision,
@@ -505,7 +510,7 @@ def main() -> int:
                 "candidate_enterprise_modules": len(candidate_enterprise),
                 "confirmed_enterprise_modules": len(confirmed_enterprise),
                 "candidate_enterprise_review_modules": len(review_candidates),
-                "target_enterprise_modules": len(target_modules),
+                "current_enterprise_modules": len(current_enterprise_modules),
             },
             "missing_community_modules": missing_community,
             "drifted_community_modules": sorted(drifted_community),
