@@ -88,8 +88,8 @@ valid Odoo subscription
 The Enterprise ZIP is acquisition input only. It has a file hash, not a Git
 commit. The import tool records that ZIP hash, compares against the exact
 Community commit used by the deployment, keeps only Enterprise source, and
-commits the result to a private Git repository controlled by the deployment
-operator/customer.
+can commit the result to a clean private Git repository controlled by the
+deployment operator/customer.
 
 After that import, normal image builds never download from Odoo's web portal
 and never see the subscription code. They consume only Git sources pinned in
@@ -159,6 +159,7 @@ images/README.md
 tools/
   README.md
   lock-repos
+  odoo-enterprise-import
   update-base-image-digest
 
 derived-image-scaffold/
@@ -197,6 +198,7 @@ repository:
 
 ```text
 tools/lock-repos                         -> generates repos.lock.yaml
+tools/odoo-enterprise-import             -> imports Enterprise ZIPs into private Git source
 images/builder/scripts/odoo-build-image  -> single source-build execution for a derived image release
 images/builder/scripts/odoo-generate-addons-path
   -> generates /etc/odoo/addons_path from repos.lock.yaml + materialized source tree

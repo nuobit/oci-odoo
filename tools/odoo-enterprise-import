@@ -2,13 +2,12 @@
 # SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Inspect an Odoo Enterprise source archive before importing it to Git.
+"""Inspect or import an Odoo Enterprise source archive into Git.
 
-This first implementation is intentionally dry-run only. It validates the
-source archive against the exact Community source selected by repos.lock.yaml
-and reports the modules that are not present in that Community source. Those are
-Enterprise candidates until reviewed: an extra module can also mean the ZIP was
-generated from a newer Community snapshot.
+The command is dry-run by default. It validates the source archive against the
+exact Community source selected by repos.lock.yaml and reports the modules that
+are not present in that Community source. With --apply, it writes those
+Enterprise modules into a local private Enterprise Git worktree.
 
 The import phase is deliberately separate from image builds:
 - this tool handles ZIP acquisition/classification/import preparation;
@@ -22,6 +21,7 @@ import argparse
 import ast
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -123,6 +123,30 @@ def git_head(path: Path) -> str | None:
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
     return result.stdout.strip()
+
+
+def run_git(path: Path, *args: str, capture: bool = False) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+    )
+    return result.stdout.strip() if capture and result.stdout else ""
+
+
+def ensure_clean_git_worktree(path: Path) -> None:
+    try:
+        inside = run_git(path, "rev-parse", "--is-inside-work-tree", capture=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"--apply requires --current-src to be inside a Git worktree: {path}") from exc
+    if inside != "true":
+        raise SystemExit(f"--apply requires --current-src to be inside a Git worktree: {path}")
+
+    status = run_git(path, "status", "--porcelain", capture=True)
+    if status:
+        raise SystemExit(f"--apply requires a clean Enterprise Git worktree:\n{status}")
 
 
 def module_manifest_path(path: Path) -> Path | None:
@@ -241,6 +265,32 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def ensure_inside(root: Path, path: Path) -> None:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise SystemExit(f"Refusing to write outside current source: {path}") from exc
+
+
+def replace_module_tree(source: Path, target: Path, current_src: Path) -> None:
+    ensure_inside(current_src, target)
+    if target.exists():
+        if not target.is_dir():
+            raise SystemExit(f"Refusing to replace non-directory module path: {target}")
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+
+
+def remove_module_tree(target: Path, current_src: Path) -> None:
+    ensure_inside(current_src, target)
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise SystemExit(f"Refusing to remove non-directory module path: {target}")
+    shutil.rmtree(target)
+
+
 def module_relative_path(module: ModuleInfo, source: Path) -> str:
     try:
         return module.path.relative_to(source).as_posix()
@@ -342,6 +392,7 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
         warnings.append("Community checkout HEAD differs from repos.lock.yaml revision")
 
     return {
+        "mode": report["mode"],
         "community_modules": counts["community_modules"],
         "download_modules": counts["download_modules"],
         "current_modules": counts["current_modules"],
@@ -360,8 +411,13 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 def print_human_summary(summary: dict[str, Any]) -> None:
     plan = summary["plan"]
-    print("Enterprise import dry-run summary")
-    print("---------------------------------")
+    title = (
+        "Enterprise import apply summary"
+        if summary["mode"] == "apply"
+        else "Enterprise import dry-run summary"
+    )
+    print(title)
+    print("-" * len(title))
     print(f"Community modules:            {summary['community_modules']}")
     print(f"Downloaded modules:           {summary['download_modules']}")
     print(f"Current modules:              {summary['current_modules']}")
@@ -424,9 +480,141 @@ def confirm_enterprise_import(args: argparse.Namespace, community_src: Path) -> 
     return answer in {"y", "yes"}
 
 
+def commit_message_for(action: str, module: str, date: str) -> str:
+    if action == "add":
+        return f"[ADD] {module}: import from Odoo Enterprise {date}"
+    if action == "update":
+        return f"[IMP] {module}: update from Odoo Enterprise {date}"
+    if action == "remove":
+        return f"[REM] {module}: remove from Odoo Enterprise {date}"
+    raise ValueError(f"Unsupported commit action: {action}")
+
+
+def commit_body_for(report: dict[str, Any], detail: dict[str, Any]) -> str:
+    lines = [
+        "Odoo Enterprise import.",
+        "",
+        f"Generated at: {report['generated_at']}",
+        f"ZIP sha256: {report['zip_sha256'] or 'not available'}",
+        f"Community commit: {report['community_lock_revision']}",
+        f"Download digest: {detail['download_digest'] or 'not available'}",
+        f"Previous digest: {detail['current_digest'] or 'not available'}",
+        f"Manifest license: {detail['download_license'] or detail['current_license'] or 'not declared'}",
+    ]
+    return "\n".join(lines)
+
+
+def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "generated_at": report["generated_at"],
+        "mode": report["mode"],
+        "zip_sha256": report["zip_sha256"],
+        "zip_size": report["zip_size"],
+        "community_dest": report["community_dest"],
+        "community_lock_revision": report["community_lock_revision"],
+        "community_worktree_head": report["community_worktree_head"],
+        "community_source_used_as_import_reference": report["community_source_used_as_import_reference"],
+        "counts": report["counts"],
+        "missing_community_modules": report["missing_community_modules"],
+        "drifted_community_modules": report["drifted_community_modules"],
+        "enterprise_modules": report["enterprise_modules"],
+        "enterprise_details": report["enterprise_details"],
+        "import_plan": report["import_plan"],
+        "apply_result": report.get("apply_result"),
+    }
+
+
+def commit_path(current_src: Path, relative_path: Path, message: str, body: str) -> str:
+    run_git(current_src, "add", "-A", "--", relative_path.as_posix())
+    run_git(current_src, "commit", "-q", "-m", message, "-m", body)
+    return run_git(current_src, "rev-parse", "HEAD", capture=True)
+
+
+def apply_import_plan(
+    *,
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    download_modules: dict[str, ModuleInfo],
+    current_modules: dict[str, ModuleInfo],
+    current_src: Path,
+) -> dict[str, Any]:
+    if not args.current_src:
+        raise SystemExit("--apply requires --current-src")
+    if report["import_plan"]["actions"]["remove"] and not args.apply_removals:
+        removals = ", ".join(report["import_plan"]["actions"]["remove"])
+        raise SystemExit(
+            "--apply found removals that require explicit review. "
+            f"Rerun with --apply-removals to remove: {removals}"
+        )
+
+    ensure_clean_git_worktree(current_src)
+    applied: list[dict[str, Any]] = []
+    import_date = datetime.now(timezone.utc).date().isoformat()
+    action_order = ("add", "update", "remove")
+
+    for action in action_order:
+        for module_name in report["import_plan"]["actions"][action]:
+            detail = report["import_plan"]["action_details"][module_name]
+            if action in {"add", "update"}:
+                download_module = download_modules[module_name]
+                target = current_modules[module_name].path if module_name in current_modules else current_src / module_name
+                replace_module_tree(download_module.path, target, current_src)
+            else:
+                target = current_modules[module_name].path
+                remove_module_tree(target, current_src)
+
+            relative_target = target.relative_to(current_src)
+            sha = commit_path(
+                current_src,
+                relative_target,
+                commit_message_for(action, module_name, import_date),
+                commit_body_for(report, detail),
+            )
+            applied.append(
+                {
+                    "module": module_name,
+                    "action": action,
+                    "commit": sha,
+                    "path": relative_target.as_posix(),
+                }
+            )
+            current_modules = collect_modules(current_src)
+
+    metadata_dir = current_src / args.metadata_dir
+    ensure_inside(current_src, metadata_dir)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    metadata_path = metadata_dir / f"{timestamp}-enterprise-import.json"
+    report["apply_result"] = {
+        "commits": applied,
+        "metadata_path": metadata_path.relative_to(current_src).as_posix(),
+    }
+    metadata_path.write_text(
+        json.dumps(committed_metadata(report), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    metadata_commit = commit_path(
+        current_src,
+        metadata_path.relative_to(current_src),
+        "[IMP] update Enterprise import metadata",
+        "\n".join(
+            [
+                "Record Odoo Enterprise import metadata.",
+                "",
+                f"Generated at: {report['generated_at']}",
+                f"ZIP sha256: {report['zip_sha256'] or 'not available'}",
+                f"Community commit: {report['community_lock_revision']}",
+            ]
+        ),
+    )
+    report["apply_result"]["metadata_commit"] = metadata_commit
+    ensure_clean_git_worktree(current_src)
+    return report["apply_result"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Dry-run an Odoo Enterprise ZIP/folder import against locked Community source.",
+        description="Inspect or apply an Odoo Enterprise ZIP/folder import against locked Community source.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--zip", dest="zip_path", type=Path, help="Enterprise ZIP downloaded from Odoo")
@@ -447,7 +635,7 @@ def parse_args() -> argparse.Namespace:
         default="./odoo",
         help="Destination key in repos.lock.yaml for Odoo Community (default: ./odoo)",
     )
-    parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
+    parser.add_argument("--report-json", type=Path, help="Write a machine-readable import report")
     parser.add_argument(
         "--json-only",
         action="store_true",
@@ -467,6 +655,21 @@ def parse_args() -> argparse.Namespace:
         "--yes",
         action="store_true",
         help="Do not prompt before treating --community-src as the Enterprise import reference",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the import plan to --current-src and create Git commits",
+    )
+    parser.add_argument(
+        "--apply-removals",
+        action="store_true",
+        help="Allow --apply to remove current Enterprise modules absent from the new import plan",
+    )
+    parser.add_argument(
+        "--metadata-dir",
+        default=".enterprise-imports",
+        help="Directory inside --current-src for committed import metadata (default: .enterprise-imports)",
     )
     return parser.parse_args()
 
@@ -572,7 +775,7 @@ def main() -> int:
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "mode": "dry-run",
+            "mode": "apply" if args.apply else "dry-run",
             "zip_sha256": zip_sha256,
             "zip_size": zip_size,
             "download_source": str(download_src),
@@ -599,6 +802,29 @@ def main() -> int:
             "recommendations": recommendations,
         }
         report["human_summary"] = build_human_summary(report)
+
+        if args.apply:
+            if missing_community:
+                print(
+                    "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
+                    "Refresh the Enterprise ZIP and/or run lock-repos --refresh ./odoo, then retry.",
+                    file=sys.stderr,
+                )
+                return 2
+            if community_head and community_head != community_revision and not args.allow_community_head_mismatch:
+                print(
+                    "ERROR: Community worktree HEAD differs from repos.lock.yaml revision. "
+                    "Use --allow-community-head-mismatch only after review.",
+                    file=sys.stderr,
+                )
+                return 4
+            apply_import_plan(
+                args=args,
+                report=report,
+                download_modules=download_modules,
+                current_modules=current_modules,
+                current_src=current_src,
+            )
 
         if args.report_json:
             write_report(args.report_json, report)

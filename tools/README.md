@@ -40,14 +40,14 @@ If a merge is being added for the first time, plain `lock-repos` is enough.
 
 ### `odoo-enterprise-import`
 
-Dry-runs an Odoo Enterprise source ZIP or already extracted source directory
-against the exact Community checkout selected by `repos.lock.yaml`.
+Inspects or imports an Odoo Enterprise source ZIP or already extracted source
+directory against the exact Community checkout selected by `repos.lock.yaml`.
 
-This tool is the first step of the Enterprise mirror flow. It does not download
-from odoo.com and it does not write Git commits yet. It answers the question:
-"given this Enterprise payload and this locked Community source, which modules
-are Enterprise candidates and can be reviewed before importing into the private
-Enterprise Git repo?"
+This tool is the Enterprise mirror flow. It does not download from odoo.com.
+By default it is a dry-run and answers the question: "given this Enterprise
+payload and this locked Community source, which modules are Enterprise
+candidates and what would change in the private Enterprise Git repo?" With
+`--apply`, it writes those changes into a clean local Enterprise Git worktree.
 
 Example:
 
@@ -109,7 +109,7 @@ and reports the manifest license as useful metadata, but license is no longer
 used to decide whether a module is Enterprise. Community membership decides.
 
 If `--current-src` points to the current private/internal source repository,
-the report also contains an `import_plan` with dry-run actions:
+the report also contains an `import_plan` with actions:
 
 - `add`: Enterprise modules not present in the current Enterprise source;
 - `update`: Enterprise modules present in both places but with different tree
@@ -119,8 +119,30 @@ the report also contains an `import_plan` with dry-run actions:
 - `unchanged`: Enterprise modules already identical in the current Enterprise
   source.
 
-The plan is still review-only. Removals must be reviewed before any future
-`--apply` mode.
+Default mode is review-only. To apply the plan, point `--current-src` at a
+clean local checkout of the private Enterprise Git repo and pass `--apply`:
+
+```bash
+tools/odoo-enterprise-import \
+  --zip /path/to/odoo-enterprise-17.zip \
+  --community-src /path/to/materialized/src/odoo \
+  --repos-lock repos.lock.yaml \
+  --current-src /path/to/private/odoo-enterprise \
+  --apply \
+  --yes \
+  --report-json workdir/enterprise-import-report.json
+```
+
+Apply mode creates:
+
+- one commit per added Enterprise module;
+- one commit per updated Enterprise module;
+- one commit per removed Enterprise module;
+- one final metadata commit under `.enterprise-imports/`.
+
+Removals require the explicit `--apply-removals` flag. This prevents accidental
+deletion when a stale or incomplete Enterprise download is reviewed too quickly.
+The command refuses to apply if `--current-src` is not a clean Git worktree.
 
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.
