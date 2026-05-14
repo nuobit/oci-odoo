@@ -193,6 +193,9 @@ present as an `index` annotation.
 Use this pattern for each published image:
 
 ```bash
+gh auth refresh -h github.com -s read:packages -s write:packages
+gh auth token | docker login ghcr.io -u <github-user> --password-stdin
+
 GHCR_REPO="ghcr.io/<owner>/<image>"
 GHCR_TAG="17.0-py310-trixie-r0001"
 GHCR_IMAGE="${GHCR_REPO}:${GHCR_TAG}"
@@ -211,6 +214,12 @@ docker buildx imagetools create \
   --tag "$GHCR_IMAGE" \
   "${GHCR_REPO}@${GHCR_DIGEST}"
 ```
+
+`gh auth` and Docker registry authentication are separate. If `docker push`
+reports that the token does not match the expected scopes while `gh auth status`
+shows `write:packages`, refresh Docker's GHCR login with the `gh auth token |
+docker login ... --password-stdin` line above and retry. Do not inspect Docker's
+credential file while debugging; it may contain live registry credentials.
 
 Concrete foundation values:
 
