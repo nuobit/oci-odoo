@@ -159,6 +159,7 @@ images/README.md
 tools/
   README.md
   lock-repos
+  odoo-enterprise-download
   odoo-enterprise-import
   update-base-image-digest
 
@@ -198,6 +199,7 @@ repository:
 
 ```text
 tools/lock-repos                         -> generates repos.lock.yaml
+tools/odoo-enterprise-download           -> downloads Enterprise ZIPs outside builds
 tools/odoo-enterprise-import             -> imports Enterprise ZIPs into private Git source
 images/builder/scripts/odoo-build-image  -> single source-build execution for a derived image release
 images/builder/scripts/odoo-generate-addons-path

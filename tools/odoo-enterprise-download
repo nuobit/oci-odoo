@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Download an Odoo Enterprise source archive from Odoo's download portal.
+
+This is an operator/acquisition tool. It is deliberately separate from Docker
+builds and from Enterprise import/classification:
+
+- this command downloads and records the ZIP identity;
+- odoo-enterprise-import classifies/applies the ZIP into a private Git mirror;
+- image builds consume only Git repositories locked in repos.lock.yaml.
+
+Never store subscription codes in Git, Dockerfiles, image layers, command logs,
+or committed reports.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import html
+import json
+import os
+import re
+import stat
+import sys
+import urllib.parse
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import requests
+
+
+DEFAULT_BASE_URL = "https://www.odoo.com"
+DEFAULT_PLATFORM_VERSION = "src_17e"
+CODE_ENV_VAR = "ODOO_ENTERPRISE_SUBSCRIPTION_CODE"
+USER_AGENT = "odyssey-odoo-enterprise-download/1.0"
+
+RESULT_MESSAGES = {
+    "success": "subscription accepted",
+    "oe_download_invalid_code": "invalid subscription code",
+    "oe_download_not_allowed": "subscription cannot download Odoo Enterprise",
+    "oe_download_invalid_status": "subscription is closed",
+    "oe_download_server_error": "unknown Odoo server error",
+}
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalize_base_url(base_url: str) -> str:
+    return base_url.rstrip("/")
+
+
+def sanitize_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.query:
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    query_keys = sorted(urllib.parse.parse_qs(parsed.query, keep_blank_values=True))
+    safe_query = urllib.parse.urlencode({key: "<redacted>" for key in query_keys})
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, safe_query, ""))
+
+
+def validate_secret_file_permissions(path: Path) -> None:
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"subscription-code file does not exist: {path}") from exc
+
+    if mode & 0o077:
+        raise SystemExit(
+            "subscription-code file is not private enough. "
+            f"Current mode: {oct(mode)}. Use chmod 600 or chmod 400."
+        )
+
+
+def subscription_code(args: argparse.Namespace) -> str:
+    code_from_file = None
+    if args.subscription_code_file:
+        validate_secret_file_permissions(args.subscription_code_file)
+        code_from_file = args.subscription_code_file.read_text(encoding="utf-8").strip()
+
+    candidates = [
+        args.subscription_code,
+        code_from_file,
+        os.environ.get(CODE_ENV_VAR),
+    ]
+    for candidate in candidates:
+        if candidate:
+            return candidate.strip()
+    return getpass.getpass("Odoo Enterprise subscription code: ").strip()
+
+
+def print_http_debug(label: str, response: requests.Response) -> None:
+    print(
+        f"{label}: status={response.status_code} "
+        f"content-type={response.headers.get('Content-Type', '<none>')} "
+        f"url={sanitize_url(response.url)}",
+        file=sys.stderr,
+    )
+    for index, item in enumerate(response.history, start=1):
+        print(
+            f"{label} redirect {index}: status={item.status_code} "
+            f"location={sanitize_url(item.headers.get('Location', item.url))}",
+            file=sys.stderr,
+        )
+
+
+def warm_download_session(session: requests.Session, base_url: str, timeout: int) -> None:
+    response = session.get(f"{base_url}/page/download", timeout=timeout)
+    response.raise_for_status()
+
+
+def check_subscription(
+    session: requests.Session,
+    base_url: str,
+    code: str,
+    timeout: int,
+) -> str:
+    payload = {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {"code": code},
+    }
+    response = session.post(
+        f"{base_url}/download/check_subscription",
+        headers={
+            "Accept": "application/json",
+            "Referer": f"{base_url}/page/download",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if isinstance(data, dict):
+        if "error" in data:
+            raise RuntimeError(f"Odoo JSON-RPC error: {data['error']!r}")
+        if "result" in data:
+            return str(data["result"])
+    if isinstance(data, str):
+        return data
+    raise RuntimeError(f"Unexpected subscription-check response shape: {data!r}")
+
+
+def build_download_url(base_url: str, code: str, platform_version: str) -> str:
+    query = urllib.parse.urlencode(
+        {
+            "code": code,
+            "platform_version": platform_version,
+        }
+    )
+    return f"{base_url}/thanks/download?{query}"
+
+
+def extract_archive_url_from_html(base_url: str, body: str) -> str | None:
+    urls = re.findall(r"""(?:href|src)=["']([^"']+)["']""", body, re.I)
+    for raw_url in urls:
+        url = urllib.parse.urljoin(base_url, html.unescape(raw_url))
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.netloc == "download.odoocdn.com"
+            and parsed.path.startswith("/download/")
+            and "payload=" in parsed.query
+        ):
+            return url
+    return None
+
+
+def filename_from_headers(headers: object, fallback: str) -> str:
+    content_disposition = ""
+    get = getattr(headers, "get", None)
+    if callable(get):
+        content_disposition = get("Content-Disposition", "") or ""
+
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', content_disposition)
+    if match:
+        return Path(urllib.parse.unquote(match.group(1))).name
+    return fallback
+
+
+def stream_to_file(response: requests.Response, output_path: Path, overwrite: bool) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists() and not overwrite:
+        raise SystemExit(f"refusing to overwrite existing file without --overwrite: {output_path}")
+
+    temp_path = output_path.with_name(f"{output_path.name}.part")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    with temp_path.open("wb") as stream:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                stream.write(chunk)
+
+    if temp_path.stat().st_size == 0:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"downloaded file is empty: {output_path}")
+    temp_path.replace(output_path)
+
+
+def download_archive(
+    *,
+    session: requests.Session,
+    base_url: str,
+    code: str,
+    platform_version: str,
+    output_dir: Path,
+    filename: str | None,
+    timeout: int,
+    debug_http: bool,
+    overwrite: bool,
+) -> Path:
+    response = session.get(
+        build_download_url(base_url, code, platform_version),
+        headers={"Referer": f"{base_url}/page/download"},
+        stream=True,
+        timeout=timeout,
+    )
+    if debug_http:
+        print_http_debug("Download response", response)
+    response.raise_for_status()
+
+    content_type = response.headers.get("Content-Type", "")
+    if "text/html" in content_type.lower():
+        archive_url = extract_archive_url_from_html(base_url, response.text)
+        if not archive_url:
+            raise RuntimeError(
+                "Odoo returned HTML instead of an archive and no archive URL was found. "
+                "No response body was saved because the HTML may contain sensitive URLs."
+            )
+        response = session.get(
+            archive_url,
+            headers={"Referer": response.url},
+            stream=True,
+            timeout=timeout,
+        )
+        if debug_http:
+            print_http_debug("Archive response", response)
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" in content_type.lower():
+            raise RuntimeError(
+                "The archive URL also returned HTML. "
+                "No response body was saved because it may contain sensitive payload data."
+            )
+
+    fallback = filename or f"odoo-enterprise-{platform_version}.zip"
+    resolved_filename = filename or filename_from_headers(response.headers, fallback)
+    output_path = output_dir / resolved_filename
+    stream_to_file(response, output_path, overwrite)
+    if not zipfile.is_zipfile(output_path):
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"downloaded file is not a ZIP archive: {output_path}")
+    return output_path
+
+
+def report_for(
+    *,
+    args: argparse.Namespace,
+    output_path: Path | None,
+    check_result: str | None,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "base_url": normalize_base_url(args.base_url),
+        "platform_version": args.platform_version,
+        "subscription_check": check_result,
+        "subscription_check_message": RESULT_MESSAGES.get(check_result) if check_result else None,
+        "output_path": str(output_path) if output_path else None,
+        "sha256": sha256_file(output_path) if output_path else None,
+        "size": output_path.stat().st_size if output_path else None,
+    }
+    return report
+
+
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate a subscription code and download an Odoo Enterprise source ZIP.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help=f"Odoo website base URL. Default: {DEFAULT_BASE_URL}",
+    )
+    parser.add_argument(
+        "--platform-version",
+        default=DEFAULT_PLATFORM_VERSION,
+        help=f"Odoo download platform_version. Default: {DEFAULT_PLATFORM_VERSION}",
+    )
+    parser.add_argument(
+        "--subscription-code",
+        help=(
+            "Subscription code. Not recommended because it can leak through shell "
+            f"history/process listings. Prefer {CODE_ENV_VAR}, --subscription-code-file, or prompt."
+        ),
+    )
+    parser.add_argument(
+        "--subscription-code-file",
+        type=Path,
+        help="File containing the subscription code. Must be private: no group/other permissions.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("workdir/downloads"),
+        help="Directory where the ZIP will be stored. Default: workdir/downloads",
+    )
+    parser.add_argument(
+        "--filename",
+        help="Optional output filename. If omitted, Content-Disposition is used when available.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow replacing an existing output ZIP.",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only call /download/check_subscription; do not download the archive.",
+    )
+    parser.add_argument(
+        "--skip-check",
+        action="store_true",
+        help="Skip the subscription validation RPC and call the download URL directly.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="HTTP timeout in seconds. Default: 60",
+    )
+    parser.add_argument(
+        "--debug-http",
+        action="store_true",
+        help="Print sanitized HTTP status, redirects, and content type. Never prints the subscription code.",
+    )
+    parser.add_argument(
+        "--report-json",
+        type=Path,
+        help="Write a machine-readable report with path, size, and sha256.",
+    )
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="Print only JSON to stdout.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    base_url = normalize_base_url(args.base_url)
+    code = subscription_code(args)
+
+    if not code:
+        print("ERROR: empty subscription code", file=sys.stderr)
+        return 2
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+
+    try:
+        warm_download_session(session, base_url, args.timeout)
+    except requests.RequestException as exc:
+        print(f"ERROR: download page warm-up failed: {exc}", file=sys.stderr)
+        return 1
+
+    check_result = None
+    if not args.skip_check:
+        try:
+            check_result = check_subscription(session, base_url, code, args.timeout)
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"ERROR: subscription check failed: {exc}", file=sys.stderr)
+            return 1
+
+        if check_result != "success":
+            message = RESULT_MESSAGES.get(check_result, f"unexpected result: {check_result}")
+            print(f"ERROR: subscription check failed: {check_result} ({message})", file=sys.stderr)
+            return 1
+
+    output_path = None
+    if not args.check_only:
+        try:
+            output_path = download_archive(
+                session=session,
+                base_url=base_url,
+                code=code,
+                platform_version=args.platform_version,
+                output_dir=args.output_dir,
+                filename=args.filename,
+                timeout=args.timeout,
+                debug_http=args.debug_http,
+                overwrite=args.overwrite,
+            )
+        except (RuntimeError, requests.RequestException) as exc:
+            print(f"ERROR: download failed: {exc}", file=sys.stderr)
+            return 1
+
+    report = report_for(args=args, output_path=output_path, check_result=check_result)
+    if args.report_json:
+        write_report(args.report_json, report)
+
+    if args.json_only:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        if check_result:
+            print(f"Subscription check: {check_result} ({RESULT_MESSAGES.get(check_result)})")
+        if output_path:
+            print(f"Downloaded archive: {output_path}")
+            print(f"Size: {report['size']}")
+            print(f"SHA256: {report['sha256']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

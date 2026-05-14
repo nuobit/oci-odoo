@@ -38,16 +38,61 @@ Use `--refresh <dest>` to move every merge under one aggregate destination. Use
 
 If a merge is being added for the first time, plain `lock-repos` is enough.
 
+### `odoo-enterprise-download`
+
+Downloads an Odoo Enterprise source ZIP from Odoo's official download portal.
+
+This is an acquisition tool only. It does not classify modules, does not import
+Enterprise source into Git, and must never run inside Docker builds. The normal
+flow is:
+
+```text
+odoo-enterprise-download -> ZIP + sha256
+odoo-enterprise-import   -> private Enterprise Git mirror/cache
+repos.yaml/repos.lock    -> normal image build
+```
+
+Example using a private subscription-code file:
+
+```bash
+tools/odoo-enterprise-download \
+  --platform-version src_17e \
+  --subscription-code-file ~/.config/oci-odoo/navalen/odoo-enterprise-subscription-code \
+  --output-dir workdir/downloads \
+  --report-json workdir/enterprise-download-report.json
+```
+
+The subscription code can be supplied in four ways:
+
+- `--subscription-code-file`: recommended for automation. The file must be
+  private (`chmod 600` or `chmod 400`).
+- hidden interactive prompt: recommended for one-off manual runs.
+- `ODOO_ENTERPRISE_SUBSCRIPTION_CODE`: acceptable for controlled CI/operator
+  environments.
+- `--subscription-code`: supported but not recommended because command-line
+  arguments can leak through shell history and process listings.
+
+The command prints and records:
+
+- downloaded ZIP path;
+- byte size;
+- `sha256`;
+- Odoo subscription-check result.
+
+It does not write or print the subscription code. `--debug-http` redacts query
+values from URLs before printing HTTP diagnostics.
+
 ### `odoo-enterprise-import`
 
 Inspects or imports an Odoo Enterprise source ZIP or already extracted source
 directory against the exact Community checkout selected by `repos.lock.yaml`.
 
-This tool is the Enterprise mirror flow. It does not download from odoo.com.
-By default it is a dry-run and answers the question: "given this Enterprise
-payload and this locked Community source, which modules are Enterprise
-candidates and what would change in the private Enterprise Git repo?" With
-`--apply`, it writes those changes into a clean local Enterprise Git worktree.
+This tool is the Enterprise mirror import flow. It does not download from
+odoo.com. By default it is a dry-run and answers the question: "given this
+Enterprise payload and this locked Community source, which modules are
+Enterprise candidates and what would change in the private Enterprise Git repo?"
+With `--apply`, it writes those changes into a clean local Enterprise Git
+worktree.
 
 Example:
 
@@ -147,11 +192,9 @@ The command refuses to apply if `--current-src` is not a clean Git worktree.
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.
 
-The old local proof of concept for downloading from odoo.com proved the
-separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
-check, and following the CDN payload link when Odoo returns an HTML download
-page. Keep that acquisition step separate from Docker builds and from this
-classification/import validation.
+The download/acquisition step belongs in `odoo-enterprise-download`. Keep that
+step separate from Docker builds and from this classification/import
+validation.
 
 ### `update-base-image-digest`
 
