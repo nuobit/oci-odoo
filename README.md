@@ -233,6 +233,18 @@ ghcr.io/nuobit/oci-odoo-builder
   description: Reusable Odoo OCI build foundation
 ```
 
+For production Kubernetes deployments built from this project, use both a
+meaningful release tag and the resolved digest in manifests:
+
+```text
+ghcr.io/<client-org>/<image>:17.0-py310-trixie-r0002@sha256:<digest>
+```
+
+The tag is the human release name. The digest is the immutable artifact
+identity. Project-owned tags must still be treated as immutable and never
+rewritten; digest-pinned manifests add a second protection layer against human
+error, CI mistakes, accidental republish, and future process drift.
+
 After first publication, verify the GitHub package settings in the UI:
 
 ```text
