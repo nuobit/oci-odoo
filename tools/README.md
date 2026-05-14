@@ -57,6 +57,7 @@ tools/odoo-enterprise-import \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
+  --review-decisions workdir/enterprise-review-decisions.yaml \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -104,6 +105,38 @@ the report also contains an `import_plan` with dry-run actions:
 
 The plan is still review-only. In particular, removals and candidates without a
 proprietary manifest license must be reviewed before any future `--apply` mode.
+
+For ambiguous candidates, use a versioned review decisions file instead of
+hardcoding the choice in the source tree. This lets the operator explicitly say
+whether a downloaded extra module is Enterprise or Community:
+
+```yaml
+modules:
+  new_common_candidate:
+    classification: community  # enterprise|community
+    reason: "Appears to be a newer Community module; refresh Community next"
+  account_accountant:
+    classification: enterprise
+    reason: "Confirmed by Odoo proprietary license"
+```
+
+Run with `--review-decisions <file>`. Modules classified as `enterprise` are
+included in the import plan. Modules classified as `community` are excluded
+from the Enterprise import plan. If a future download contradicts a previous
+decision, for example the module later carries `OEEL-1` while the decision says
+`community`, the tool keeps running but reports a review-decision conflict so
+the decision can be corrected.
+
+To create a starting point for manual review, use:
+
+```bash
+tools/odoo-enterprise-import ... \
+  --write-review-template workdir/enterprise-review-decisions.yaml
+```
+
+The human summary lists the concrete modules that still need review, the
+current-source modules planned as removals, stale/unused decisions, and any
+decision conflicts.
 
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.

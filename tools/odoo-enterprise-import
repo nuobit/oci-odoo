@@ -41,6 +41,7 @@ PROPRIETARY_LICENSE_MARKERS = (
     "enterprise edition license",
     "proprietary",
 )
+VALID_REVIEW_CLASSIFICATIONS = {"enterprise", "community"}
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,104 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def load_review_decisions(path: Path | None) -> dict[str, dict[str, str | None]]:
+    if path is None:
+        return {}
+    if not path.is_file():
+        raise SystemExit(f"review decisions file not found: {path}")
+    data = load_yaml(path)
+    modules = data.get("modules", {})
+    if not isinstance(modules, dict):
+        raise SystemExit(f"{path}: expected 'modules' to be a mapping")
+
+    decisions: dict[str, dict[str, str | None]] = {}
+    for name, raw_decision in modules.items():
+        if not isinstance(name, str) or not name:
+            raise SystemExit(f"{path}: module names in 'modules' must be non-empty strings")
+
+        classification = None
+        reason = None
+        if raw_decision is None:
+            continue
+        if isinstance(raw_decision, str):
+            classification = raw_decision
+        elif isinstance(raw_decision, dict):
+            raw_classification = raw_decision.get("classification")
+            if raw_classification is None or raw_classification == "":
+                continue
+            if not isinstance(raw_classification, str):
+                raise SystemExit(f"{path}: {name}: classification must be a string")
+            classification = raw_classification
+            raw_reason = raw_decision.get("reason")
+            if raw_reason is not None:
+                reason = str(raw_reason)
+        else:
+            raise SystemExit(
+                f"{path}: {name}: expected classification string or mapping with classification/reason"
+            )
+
+        normalized = classification.strip().lower()
+        if normalized not in VALID_REVIEW_CLASSIFICATIONS:
+            valid = ", ".join(sorted(VALID_REVIEW_CLASSIFICATIONS))
+            raise SystemExit(f"{path}: {name}: classification must be one of: {valid}")
+        decisions[name] = {"classification": normalized, "reason": reason}
+    return decisions
+
+
+def review_decision_for(
+    name: str, decisions: dict[str, dict[str, str | None]]
+) -> dict[str, str | None] | None:
+    return decisions.get(name)
+
+
+def write_review_template(path: Path, report: dict[str, Any]) -> None:
+    details = report["candidate_enterprise_details"]
+    review_modules = report["candidate_enterprise_review_modules"]
+    removal_modules = report["import_plan"]["actions"]["remove"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Odoo Enterprise import review decisions",
+        "#",
+        "# Fill only the modules you have reviewed. Classification values:",
+        "#   enterprise: include this extra downloaded module in the Enterprise import plan",
+        "#   community:  exclude this module from the Enterprise import plan",
+        "#",
+        "# If a future download proves a decision wrong, the dry-run will warn again.",
+        "",
+        "modules:",
+    ]
+
+    if review_modules:
+        for name in review_modules:
+            module_license = details[name]["license"] or "not declared"
+            reason = json.dumps(f"review required; manifest license: {module_license}")
+            lines.extend(
+                [
+                    f"  {name}:",
+                    '    classification: ""  # enterprise|community',
+                    f"    reason: {reason}",
+                ]
+            )
+    else:
+        lines[-1] = "modules: {}"
+
+    if removal_modules:
+        lines.extend(
+            [
+                "",
+                "# Current-source modules planned as removals. These are listed for review,",
+                "# but the current dry-run decision file only classifies downloaded candidate modules.",
+                "# Review removals manually before any future apply mode.",
+                "# removal_review_modules:",
+            ]
+        )
+        for name in removal_modules:
+            lines.append(f"#   - {name}")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def module_relative_path(module: ModuleInfo, source: Path) -> str:
     try:
         return module.path.relative_to(source).as_posix()
@@ -347,6 +446,10 @@ def build_import_plan(
 def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
     counts = report["counts"]
     plan = report["import_plan"]["summary"]
+    review_modules = report["candidate_enterprise_review_modules"]
+    removal_modules = report["import_plan"]["actions"]["remove"]
+    decision_conflicts = report["review_decision_conflicts"]
+    unused_decisions = report["unused_review_decisions"]
     warnings: list[str] = []
     if counts["missing_community_modules"]:
         warnings.append(
@@ -362,6 +465,10 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
         )
     if plan["remove"]:
         warnings.append(f"{plan['remove']} current module(s) are planned as removal")
+    if decision_conflicts:
+        warnings.append(f"{len(decision_conflicts)} review decision(s) conflict with manifest evidence")
+    if unused_decisions:
+        warnings.append(f"{len(unused_decisions)} review decision(s) do not match current candidates")
     if report["community_worktree_head"] and report["community_worktree_head"] != report["community_lock_revision"]:
         warnings.append("Community checkout HEAD differs from repos.lock.yaml revision")
 
@@ -378,6 +485,10 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
             "unchanged": plan["unchanged"],
             "review_required": plan["review_required"],
         },
+        "review_candidate_modules": review_modules,
+        "review_removal_modules": removal_modules,
+        "review_decision_conflicts": decision_conflicts,
+        "unused_review_decisions": unused_decisions,
         "warnings": warnings,
     }
 
@@ -402,6 +513,28 @@ def print_human_summary(summary: dict[str, Any]) -> None:
             print(f"  - {warning}")
     else:
         print("Warnings: none")
+    if summary["review_candidate_modules"]:
+        print("Candidate modules needing review:")
+        for name in summary["review_candidate_modules"]:
+            print(f"  - {name}")
+    if summary["review_removal_modules"]:
+        print("Current modules planned as removal and needing review:")
+        for name in summary["review_removal_modules"]:
+            print(f"  - {name}")
+    if summary["review_decision_conflicts"]:
+        print("Review decision conflicts:")
+        for conflict in summary["review_decision_conflicts"]:
+            print(
+                "  - {module}: decision={decision}, license={license}".format(
+                    module=conflict["module"],
+                    decision=conflict["decision"],
+                    license=conflict["license"],
+                )
+            )
+    if summary["unused_review_decisions"]:
+        print("Unused review decisions:")
+        for item in summary["unused_review_decisions"]:
+            print(f"  - {item['module']}: decision={item['decision']}")
     print()
 
 
@@ -444,6 +577,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
     )
+    parser.add_argument(
+        "--review-decisions",
+        type=Path,
+        help="YAML file with reviewed module classifications: enterprise or community",
+    )
+    parser.add_argument(
+        "--write-review-template",
+        type=Path,
+        help="Write a YAML review-decisions template for unresolved modules",
+    )
     return parser.parse_args()
 
 
@@ -459,6 +602,8 @@ def main() -> int:
 
     community_revision = locked_community_revision(lock_path, args.community_dest)
     community_head = git_head(community_src)
+    review_decisions_path = args.review_decisions.resolve() if args.review_decisions else None
+    review_decisions = load_review_decisions(review_decisions_path)
     current_src = None
     zip_sha256 = None
     zip_size = None
@@ -507,17 +652,64 @@ def main() -> int:
             }
             for name in candidate_enterprise
         }
-        confirmed_enterprise = sorted(
+        license_confirmed_enterprise = sorted(
             name for name, details in candidate_details.items() if details["license_is_proprietary"]
         )
-        review_candidates = sorted(
-            name for name, details in candidate_details.items() if not details["license_is_proprietary"]
+        decision_enterprise = sorted(
+            name
+            for name in candidate_enterprise
+            if review_decision_for(name, review_decisions)
+            and review_decision_for(name, review_decisions)["classification"] == "enterprise"
         )
+        decision_community = sorted(
+            name
+            for name in candidate_enterprise
+            if review_decision_for(name, review_decisions)
+            and review_decision_for(name, review_decisions)["classification"] == "community"
+        )
+        decision_conflicts = [
+            {
+                "module": name,
+                "decision": "community",
+                "license": download_modules[name].license,
+                "reason": review_decisions[name]["reason"],
+                "message": "decision marks module as community but the manifest license is proprietary",
+            }
+            for name in decision_community
+            if is_proprietary_license(download_modules[name].license)
+        ]
+        unused_decisions = [
+            {
+                "module": name,
+                "decision": decision["classification"],
+                "reason": decision["reason"],
+                "message": "decision did not match a current downloaded candidate module",
+            }
+            for name, decision in sorted(review_decisions.items())
+            if name not in candidate_enterprise
+        ]
+        confirmed_enterprise = sorted(
+            (set(license_confirmed_enterprise) | set(decision_enterprise)) - set(decision_community)
+        )
+        import_candidate_names = sorted(set(candidate_enterprise) - set(decision_community))
+        review_candidates = sorted(set(import_candidate_names) - set(confirmed_enterprise))
+        for name, details in candidate_details.items():
+            decision = review_decision_for(name, review_decisions)
+            details["review_decision"] = decision["classification"] if decision else None
+            details["review_decision_reason"] = decision["reason"] if decision else None
+            if name in decision_community:
+                details["effective_classification"] = "decision_community"
+            elif name in license_confirmed_enterprise:
+                details["effective_classification"] = "confirmed_enterprise_license"
+            elif name in decision_enterprise:
+                details["effective_classification"] = "confirmed_enterprise_decision"
+            else:
+                details["effective_classification"] = "needs_review"
         current_modules = collect_modules(current_src) if current_src else {}
         import_plan = build_import_plan(
             download_modules=download_modules,
             current_modules=current_modules,
-            candidate_names=candidate_enterprise,
+            candidate_names=import_candidate_names,
             confirmed_names=confirmed_enterprise,
             review_names=review_candidates,
             download_root_path=download_src,
@@ -543,13 +735,29 @@ def main() -> int:
             recommendations.append(
                 "Review candidate Enterprise modules; if any are actually newer Community modules, refresh Community and retry."
             )
+        if decision_community:
+            recommendations.append(
+                "Modules explicitly decided as community are excluded from the Enterprise import plan."
+            )
         if confirmed_enterprise:
             recommendations.append(
                 "Modules with a proprietary manifest license can be treated as confirmed Enterprise import modules."
             )
+        if decision_enterprise:
+            recommendations.append(
+                "Modules explicitly decided as enterprise are included in the Enterprise import plan."
+            )
         if review_candidates:
             recommendations.append(
-                "Candidate modules without a proprietary manifest license need manual review before import."
+                "Candidate modules without a proprietary manifest license or review decision need manual review before import."
+            )
+        if decision_conflicts:
+            recommendations.append(
+                "Review decisions that conflict with proprietary manifest licenses should be corrected before apply."
+            )
+        if unused_decisions:
+            recommendations.append(
+                "Unused review decisions may be stale after a Community refresh or a later Enterprise download."
             )
         if import_plan["actions"]["remove"]:
             recommendations.append(
@@ -567,6 +775,7 @@ def main() -> int:
             "community_dest": args.community_dest,
             "community_lock_revision": community_revision,
             "community_worktree_head": community_head,
+            "review_decisions_source": str(review_decisions_path) if review_decisions_path else None,
             "counts": {
                 "community_modules": len(community_modules),
                 "download_modules": len(download_modules),
@@ -574,15 +783,27 @@ def main() -> int:
                 "missing_community_modules": len(missing_community),
                 "drifted_community_modules": len(drifted_community),
                 "candidate_enterprise_modules": len(candidate_enterprise),
+                "import_candidate_modules": len(import_candidate_names),
+                "license_confirmed_enterprise_modules": len(license_confirmed_enterprise),
                 "confirmed_enterprise_modules": len(confirmed_enterprise),
                 "candidate_enterprise_review_modules": len(review_candidates),
+                "decision_enterprise_modules": len(decision_enterprise),
+                "decision_community_modules": len(decision_community),
+                "unused_review_decisions": len(unused_decisions),
+                "review_decision_conflicts": len(decision_conflicts),
                 "current_modules": len(current_modules),
             },
             "missing_community_modules": missing_community,
             "drifted_community_modules": sorted(drifted_community),
             "candidate_enterprise_modules": candidate_enterprise,
+            "import_candidate_modules": import_candidate_names,
+            "license_confirmed_enterprise_modules": license_confirmed_enterprise,
             "confirmed_enterprise_modules": confirmed_enterprise,
             "candidate_enterprise_review_modules": review_candidates,
+            "decision_enterprise_modules": decision_enterprise,
+            "decision_community_modules": decision_community,
+            "unused_review_decisions": unused_decisions,
+            "review_decision_conflicts": decision_conflicts,
             "candidate_enterprise_details": candidate_details,
             "import_plan": import_plan,
             "recommendations": recommendations,
@@ -591,6 +812,8 @@ def main() -> int:
 
         if args.report_json:
             write_report(args.report_json, report)
+        if args.write_review_template:
+            write_review_template(args.write_review_template, report)
 
         if not args.json_only:
             print_human_summary(report["human_summary"])

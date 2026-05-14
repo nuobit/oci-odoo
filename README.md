@@ -105,6 +105,11 @@ one final root commit with import metadata/report
 This keeps Enterprise source private while preserving the same reproducibility,
 reviewability, and lock-file model as Community/OCA/customer addons.
 
+Ambiguous Enterprise ZIP candidates are resolved with a committed review
+decisions file, not by changing the importer. The decision says whether a
+downloaded extra module is `enterprise` or `community`; future dry-runs keep
+checking that decision and warn by module name if a later ZIP contradicts it.
+
 ## Technical Map
 
 The high-level implementation is:
