@@ -143,7 +143,7 @@ Verify only metadata:
 
 ```bash
 kubectl -n <namespace> get secret ghcr-<owner>-pull \
-  -o jsonpath='{.type}{" data="}{.data | length}{"\n"}'
+  -o go-template='{{.type}}{{" data="}}{{len .data}}{{"\n"}}'
 ```
 
 Expected shape:
