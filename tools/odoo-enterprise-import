@@ -241,6 +241,109 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def module_relative_path(module: ModuleInfo, source: Path) -> str:
+    try:
+        return module.path.relative_to(source).as_posix()
+    except ValueError:
+        return module.path.as_posix()
+
+
+def build_import_plan(
+    *,
+    source_modules: dict[str, ModuleInfo],
+    target_modules: dict[str, ModuleInfo],
+    candidate_names: list[str],
+    confirmed_names: list[str],
+    review_names: list[str],
+    source_root_path: Path,
+    target_root_path: Path | None,
+) -> dict[str, Any]:
+    source_names = set(candidate_names)
+    target_names = set(target_modules)
+    add = sorted(source_names - target_names)
+    common = sorted(source_names & target_names)
+    update = sorted(name for name in common if source_modules[name].digest != target_modules[name].digest)
+    unchanged = sorted(name for name in common if source_modules[name].digest == target_modules[name].digest)
+    remove = sorted(target_names - source_names)
+    confirmed_set = set(confirmed_names)
+    review_set = set(review_names)
+
+    action_details: dict[str, dict[str, Any]] = {}
+    for name in add + update + unchanged:
+        source_module = source_modules[name]
+        target_module = target_modules.get(name)
+        if name in confirmed_set:
+            classification = "confirmed_enterprise"
+        elif name in review_set:
+            classification = "candidate_review"
+        else:
+            classification = "candidate"
+        action = "add"
+        if name in update:
+            action = "update"
+        elif name in unchanged:
+            action = "unchanged"
+        action_details[name] = {
+            "action": action,
+            "classification": classification,
+            "source_digest": source_module.digest,
+            "target_digest": target_module.digest if target_module else None,
+            "source_license": source_module.license,
+            "target_license": target_module.license if target_module else None,
+            "source_relative_path": module_relative_path(source_module, source_root_path),
+            "target_relative_path": (
+                module_relative_path(target_module, target_root_path)
+                if target_module and target_root_path
+                else None
+            ),
+        }
+
+    for name in remove:
+        target_module = target_modules[name]
+        action_details[name] = {
+            "action": "remove",
+            "classification": "target_only",
+            "source_digest": None,
+            "target_digest": target_module.digest,
+            "source_license": None,
+            "target_license": target_module.license,
+            "source_relative_path": None,
+            "target_relative_path": module_relative_path(target_module, target_root_path)
+            if target_root_path
+            else None,
+        }
+
+    review_required = sorted(set(review_names) | set(remove))
+    return {
+        "target_source": str(target_root_path) if target_root_path else None,
+        "summary": {
+            "add": len(add),
+            "update": len(update),
+            "remove": len(remove),
+            "unchanged": len(unchanged),
+            "review_required": len(review_required),
+        },
+        "actions": {
+            "add": add,
+            "update": update,
+            "remove": remove,
+            "unchanged": unchanged,
+        },
+        "confirmed_enterprise_actions": {
+            "add": [name for name in add if name in confirmed_set],
+            "update": [name for name in update if name in confirmed_set],
+            "unchanged": [name for name in unchanged if name in confirmed_set],
+        },
+        "candidate_review_actions": {
+            "add": [name for name in add if name in review_set],
+            "update": [name for name in update if name in review_set],
+            "unchanged": [name for name in unchanged if name in review_set],
+        },
+        "review_required_modules": review_required,
+        "action_details": action_details,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Dry-run an Odoo Enterprise ZIP/folder import against locked Community source.",
@@ -262,6 +365,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
     parser.add_argument(
+        "--enterprise-target-src",
+        type=Path,
+        help="Existing private Enterprise mirror/addons root to compare against for an add/update/remove plan",
+    )
+    parser.add_argument(
         "--allow-community-head-mismatch",
         action="store_true",
         help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
@@ -281,8 +389,14 @@ def main() -> int:
 
     community_revision = locked_community_revision(lock_path, args.community_dest)
     community_head = git_head(community_src)
+    target_enterprise_src = None
     zip_sha256 = None
     zip_size = None
+
+    if args.enterprise_target_src:
+        target_enterprise_src = source_root(args.enterprise_target_src.resolve())
+        if not target_enterprise_src.is_dir():
+            raise SystemExit(f"enterprise target source not found: {target_enterprise_src}")
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
         if args.zip_path:
@@ -329,6 +443,16 @@ def main() -> int:
         review_candidates = sorted(
             name for name, details in candidate_details.items() if not details["license_is_proprietary"]
         )
+        target_modules = collect_modules(target_enterprise_src) if target_enterprise_src else {}
+        import_plan = build_import_plan(
+            source_modules=download_modules,
+            target_modules=target_modules,
+            candidate_names=candidate_enterprise,
+            confirmed_names=confirmed_enterprise,
+            review_names=review_candidates,
+            source_root_path=enterprise_src,
+            target_root_path=target_enterprise_src,
+        )
         recommendations: list[str] = []
         if missing_community:
             recommendations.extend(
@@ -357,6 +481,10 @@ def main() -> int:
             recommendations.append(
                 "Candidate modules without a proprietary manifest license need manual review before import."
             )
+        if import_plan["actions"]["remove"]:
+            recommendations.append(
+                "Target-only modules are planned as removals, but each removal needs review before apply."
+            )
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -377,6 +505,7 @@ def main() -> int:
                 "candidate_enterprise_modules": len(candidate_enterprise),
                 "confirmed_enterprise_modules": len(confirmed_enterprise),
                 "candidate_enterprise_review_modules": len(review_candidates),
+                "target_enterprise_modules": len(target_modules),
             },
             "missing_community_modules": missing_community,
             "drifted_community_modules": sorted(drifted_community),
@@ -384,6 +513,7 @@ def main() -> int:
             "confirmed_enterprise_modules": confirmed_enterprise,
             "candidate_enterprise_review_modules": review_candidates,
             "candidate_enterprise_details": candidate_details,
+            "import_plan": import_plan,
             "recommendations": recommendations,
         }
 

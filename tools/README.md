@@ -56,6 +56,7 @@ tools/odoo-enterprise-import \
   --zip /path/to/odoo-enterprise-17.zip \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
+  --enterprise-target-src /path/to/private/odoo-enterprise \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -78,6 +79,18 @@ For candidate modules, the tool also reads the module manifest with
 proprietary Odoo license such as `OEEL-1` or `OPL-1` are also reported under
 `confirmed_enterprise_modules`; candidates without a proprietary license remain
 under `candidate_enterprise_review_modules` and need manual review.
+
+If `--enterprise-target-src` points to an existing private Enterprise mirror,
+the report also contains an `import_plan` with dry-run actions:
+
+- `add`: candidate modules not present in the target mirror;
+- `update`: candidate modules present in both places but with different tree
+  hashes;
+- `remove`: target modules absent from the current candidate set;
+- `unchanged`: candidate modules already identical in the target mirror.
+
+The plan is still review-only. In particular, removals and candidates without a
+proprietary manifest license must be reviewed before any future `--apply` mode.
 
 The old local proof of concept for downloading from odoo.com proved the
 separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
