@@ -40,14 +40,15 @@ If a merge is being added for the first time, plain `lock-repos` is enough.
 
 ### `odoo-enterprise-download`
 
-Downloads an Odoo Enterprise source ZIP from Odoo's official download portal.
+Downloads an Odoo Enterprise source archive from Odoo's official download
+portal.
 
 This is an acquisition tool only. It does not classify modules, does not import
 Enterprise source into Git, and must never run inside Docker builds. The normal
 flow is:
 
 ```text
-odoo-enterprise-download -> ZIP + sha256
+odoo-enterprise-download -> archive + sha256
 odoo-enterprise-import   -> private Enterprise Git mirror/cache
 repos.yaml/repos.lock    -> normal image build
 ```
@@ -74,7 +75,8 @@ The subscription code can be supplied in four ways:
 
 The command prints and records:
 
-- downloaded ZIP path;
+- downloaded archive path;
+- archive type;
 - byte size;
 - `sha256`;
 - Odoo subscription-check result.
@@ -82,10 +84,15 @@ The command prints and records:
 It does not write or print the subscription code. `--debug-http` redacts query
 values from URLs before printing HTTP diagnostics.
 
+Do not assume the source download is a ZIP. For `src_17e`, Odoo returned a
+gzip-compressed TAR archive in May 2026. The downloader validates the payload as
+a supported source archive and records the detected type.
+
 ### `odoo-enterprise-import`
 
-Inspects or imports an Odoo Enterprise source ZIP or already extracted source
-directory against the exact Community checkout selected by `repos.lock.yaml`.
+Inspects or imports an Odoo Enterprise source archive or already extracted
+source directory against the exact Community checkout selected by
+`repos.lock.yaml`.
 
 This tool is the Enterprise mirror import flow. It does not download from
 odoo.com. By default it is a dry-run and answers the question: "given this
@@ -98,7 +105,7 @@ Example:
 
 ```bash
 tools/odoo-enterprise-import \
-  --zip /path/to/odoo-enterprise-17.zip \
+  --archive /path/to/odoo-enterprise-17.tar.gz \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
@@ -107,7 +114,7 @@ tools/odoo-enterprise-import \
 ```
 
 If the Odoo Enterprise download has already been extracted, use
-`--download-src` instead of `--zip`:
+`--download-src` instead of `--archive`:
 
 ```bash
 tools/odoo-enterprise-import \
@@ -120,14 +127,17 @@ tools/odoo-enterprise-import \
 
 The report records three separate identities:
 
-- `zip_sha256`: the downloaded Enterprise ZIP identity;
+- `archive_sha256`: the downloaded Enterprise archive identity;
 - `community_lock_revision`: the Community commit from `repos.lock.yaml`;
 - `community_worktree_head`: the local Community checkout used for comparison.
+
+`zip_sha256` and `zip_size` may appear as legacy compatibility aliases in
+reports. New callers should use the `archive_*` fields.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
 the locked Community source, or when the local Community checkout is not at the
 locked revision. Matching Community modules that drift byte-for-byte are
-reported as warnings because Odoo controls the ZIP generation and it may not
+reported as warnings because Odoo controls the archive generation and it may not
 match our current Community lock exactly.
 
 The normal safe Enterprise import workflow is to refresh the Community lock
@@ -169,7 +179,7 @@ clean local checkout of the private Enterprise Git repo and pass `--apply`:
 
 ```bash
 tools/odoo-enterprise-import \
-  --zip /path/to/odoo-enterprise-17.zip \
+  --archive /path/to/odoo-enterprise-17.tar.gz \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \

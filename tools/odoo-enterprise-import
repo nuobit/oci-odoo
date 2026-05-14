@@ -10,7 +10,7 @@ are not present in that Community source. With --apply, it writes those
 Enterprise modules into a local private Enterprise Git worktree.
 
 The import phase is deliberately separate from image builds:
-- this tool handles ZIP acquisition/classification/import preparation;
+- this tool handles archive acquisition/classification/import preparation;
 - Dockerfile.source-build consumes only Git repositories pinned in
   repos.lock.yaml.
 """
@@ -24,6 +24,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -188,7 +189,7 @@ def is_proprietary_license(license_value: str | None) -> bool:
 
 
 def source_root(path: Path) -> Path:
-    """Return the likely source root from an extracted ZIP directory."""
+    """Return the likely source root from an extracted archive directory."""
     candidates = [path]
     children = [child for child in path.iterdir() if child.is_dir()] if path.is_dir() else []
     if len(children) == 1:
@@ -247,17 +248,50 @@ def collect_modules(source: Path) -> dict[str, ModuleInfo]:
     return modules
 
 
-def extract_zip(zip_path: Path, destination: Path) -> Path:
-    with zipfile.ZipFile(zip_path) as archive:
-        destination_resolved = destination.resolve()
-        for member in archive.infolist():
-            member_path = destination / member.filename
-            try:
-                member_path.resolve().relative_to(destination_resolved)
-            except ValueError as exc:
-                raise SystemExit(f"Unsafe ZIP member path: {member.filename!r}") from exc
+def safe_relative_to(destination: Path, member_name: str) -> None:
+    destination_resolved = destination.resolve()
+    member_path = destination / member_name
+    try:
+        member_path.resolve().relative_to(destination_resolved)
+    except ValueError as exc:
+        raise SystemExit(f"Unsafe archive member path: {member_name!r}") from exc
+
+
+def extract_archive(archive_path: Path, destination: Path) -> Path:
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                safe_relative_to(destination, member.filename)
+            archive.extractall(destination)
+        return source_root(destination)
+
+    if tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path) as archive:
+            for member in archive.getmembers():
+                if member.issym() or member.islnk():
+                    raise SystemExit(f"Refusing archive link member: {member.name!r}")
+                safe_relative_to(destination, member.name)
+            extract_tar_members(archive, destination)
+        return source_root(destination)
+
+    raise SystemExit(f"Unsupported Enterprise archive format: {archive_path}")
+
+
+def archive_kind(archive_path: Path) -> str | None:
+    if zipfile.is_zipfile(archive_path):
+        return "zip"
+    if tarfile.is_tarfile(archive_path):
+        return "tar"
+    return None
+
+
+def extract_tar_members(archive: tarfile.TarFile, destination: Path) -> None:
+    try:
+        archive.extractall(destination, filter="data")
+    except TypeError as exc:
+        if "filter" not in str(exc):
+            raise
         archive.extractall(destination)
-    return source_root(destination)
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:
@@ -495,7 +529,7 @@ def commit_body_for(report: dict[str, Any], detail: dict[str, Any]) -> str:
         "Odoo Enterprise import.",
         "",
         f"Generated at: {report['generated_at']}",
-        f"ZIP sha256: {report['zip_sha256'] or 'not available'}",
+        f"Archive sha256: {report['archive_sha256'] or 'not available'}",
         f"Community commit: {report['community_lock_revision']}",
         f"Download digest: {detail['download_digest'] or 'not available'}",
         f"Previous digest: {detail['current_digest'] or 'not available'}",
@@ -508,6 +542,9 @@ def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "generated_at": report["generated_at"],
         "mode": report["mode"],
+        "archive_sha256": report["archive_sha256"],
+        "archive_size": report["archive_size"],
+        "archive_type": report["archive_type"],
         "zip_sha256": report["zip_sha256"],
         "zip_size": report["zip_size"],
         "community_dest": report["community_dest"],
@@ -602,7 +639,7 @@ def apply_import_plan(
                 "Record Odoo Enterprise import metadata.",
                 "",
                 f"Generated at: {report['generated_at']}",
-                f"ZIP sha256: {report['zip_sha256'] or 'not available'}",
+                f"Archive sha256: {report['archive_sha256'] or 'not available'}",
                 f"Community commit: {report['community_lock_revision']}",
             ]
         ),
@@ -614,10 +651,16 @@ def apply_import_plan(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Inspect or apply an Odoo Enterprise ZIP/folder import against locked Community source.",
+        description="Inspect or apply an Odoo Enterprise archive/folder import against locked Community source.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--zip", dest="zip_path", type=Path, help="Enterprise ZIP downloaded from Odoo")
+    source.add_argument("--archive", dest="archive_path", type=Path, help="Enterprise source archive")
+    source.add_argument(
+        "--zip",
+        dest="archive_path",
+        type=Path,
+        help="Deprecated alias for --archive",
+    )
     source.add_argument(
         "--download-src",
         type=Path,
@@ -687,8 +730,9 @@ def main() -> int:
     community_revision = locked_community_revision(lock_path, args.community_dest)
     community_head = git_head(community_src)
     current_src = None
-    zip_sha256 = None
-    zip_size = None
+    archive_sha256 = None
+    archive_size = None
+    archive_type = None
 
     if args.current_src:
         current_src = source_root(args.current_src.resolve())
@@ -700,13 +744,16 @@ def main() -> int:
         return 5
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
-        if args.zip_path:
-            zip_path = args.zip_path.resolve()
-            if not zip_path.is_file():
-                raise SystemExit(f"zip not found: {zip_path}")
-            zip_sha256 = sha256_file(zip_path)
-            zip_size = zip_path.stat().st_size
-            download_src = extract_zip(zip_path, Path(tmp_name))
+        if args.archive_path:
+            archive_path = args.archive_path.resolve()
+            if not archive_path.is_file():
+                raise SystemExit(f"archive not found: {archive_path}")
+            archive_type = archive_kind(archive_path)
+            if not archive_type:
+                raise SystemExit(f"unsupported Enterprise archive format: {archive_path}")
+            archive_sha256 = sha256_file(archive_path)
+            archive_size = archive_path.stat().st_size
+            download_src = extract_archive(archive_path, Path(tmp_name))
         else:
             download_src = source_root(args.download_src.resolve())
 
@@ -752,7 +799,7 @@ def main() -> int:
         if missing_community:
             recommendations.extend(
                 [
-                    "Ensure the Enterprise ZIP was freshly downloaded.",
+                    "Ensure the Enterprise archive was freshly downloaded.",
                     "Run lock-repos --refresh ./odoo if the local Community lock may be stale, then retry.",
                     "Ensure --community-src was materialized from the same repos.lock.yaml being checked.",
                 ]
@@ -761,7 +808,7 @@ def main() -> int:
             recommendations.extend(
                 [
                     "Review drifted Community modules before importing.",
-                    "If the ZIP was generated from a newer Community snapshot, refresh the Community lock and retry.",
+                    "If the archive was generated from a newer Community snapshot, refresh the Community lock and retry.",
                 ]
             )
         if enterprise_modules:
@@ -776,8 +823,11 @@ def main() -> int:
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "mode": "apply" if args.apply else "dry-run",
-            "zip_sha256": zip_sha256,
-            "zip_size": zip_size,
+            "archive_sha256": archive_sha256,
+            "archive_size": archive_size,
+            "archive_type": archive_type,
+            "zip_sha256": archive_sha256,
+            "zip_size": archive_size,
             "download_source": str(download_src),
             "current_source": str(current_src) if current_src else None,
             "community_source": str(community_src),
@@ -807,7 +857,7 @@ def main() -> int:
             if missing_community:
                 print(
                     "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
-                    "Refresh the Enterprise ZIP and/or run lock-repos --refresh ./odoo, then retry.",
+                    "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
                     file=sys.stderr,
                 )
                 return 2
@@ -836,14 +886,14 @@ def main() -> int:
         if missing_community:
             print(
                 "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
-                "Refresh the Enterprise ZIP and/or run lock-repos --refresh ./odoo, then retry.",
+                "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
                 file=sys.stderr,
             )
             return 2
         if drifted_community:
             print(
                 "WARNING: Matching Community modules differ from the locked Community source. "
-                "Review before importing; this may mean the ZIP and Community lock are from different snapshots.",
+                "Review before importing; this may mean the archive and Community lock are from different snapshots.",
                 file=sys.stderr,
             )
         if community_head and community_head != community_revision:

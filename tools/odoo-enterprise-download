@@ -7,8 +7,8 @@
 This is an operator/acquisition tool. It is deliberately separate from Docker
 builds and from Enterprise import/classification:
 
-- this command downloads and records the ZIP identity;
-- odoo-enterprise-import classifies/applies the ZIP into a private Git mirror;
+- this command downloads and records the archive identity;
+- odoo-enterprise-import classifies/applies the archive into a private Git mirror;
 - image builds consume only Git repositories locked in repos.lock.yaml.
 
 Never store subscription codes in Git, Dockerfiles, image layers, command logs,
@@ -26,6 +26,7 @@ import os
 import re
 import stat
 import sys
+import tarfile
 import urllib.parse
 import zipfile
 from datetime import datetime, timezone
@@ -190,6 +191,14 @@ def filename_from_headers(headers: object, fallback: str) -> str:
     return fallback
 
 
+def archive_kind(path: Path) -> str | None:
+    if zipfile.is_zipfile(path):
+        return "zip"
+    if tarfile.is_tarfile(path):
+        return "tar"
+    return None
+
+
 def stream_to_file(response: requests.Response, output_path: Path, overwrite: bool) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and not overwrite:
@@ -256,13 +265,13 @@ def download_archive(
                 "No response body was saved because it may contain sensitive payload data."
             )
 
-    fallback = filename or f"odoo-enterprise-{platform_version}.zip"
+    fallback = filename or f"odoo-enterprise-{platform_version}.archive"
     resolved_filename = filename or filename_from_headers(response.headers, fallback)
     output_path = output_dir / resolved_filename
     stream_to_file(response, output_path, overwrite)
-    if not zipfile.is_zipfile(output_path):
+    if not archive_kind(output_path):
         output_path.unlink(missing_ok=True)
-        raise RuntimeError(f"downloaded file is not a ZIP archive: {output_path}")
+        raise RuntimeError(f"downloaded file is not a supported archive: {output_path}")
     return output_path
 
 
@@ -279,6 +288,7 @@ def report_for(
         "subscription_check": check_result,
         "subscription_check_message": RESULT_MESSAGES.get(check_result) if check_result else None,
         "output_path": str(output_path) if output_path else None,
+        "archive_type": archive_kind(output_path) if output_path else None,
         "sha256": sha256_file(output_path) if output_path else None,
         "size": output_path.stat().st_size if output_path else None,
     }
@@ -292,7 +302,7 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate a subscription code and download an Odoo Enterprise source ZIP.",
+        description="Validate a subscription code and download an Odoo Enterprise source archive.",
     )
     parser.add_argument(
         "--base-url",
@@ -320,7 +330,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("workdir/downloads"),
-        help="Directory where the ZIP will be stored. Default: workdir/downloads",
+        help="Directory where the source archive will be stored. Default: workdir/downloads",
     )
     parser.add_argument(
         "--filename",
@@ -329,7 +339,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Allow replacing an existing output ZIP.",
+        help="Allow replacing an existing output archive.",
     )
     parser.add_argument(
         "--check-only",
@@ -355,7 +365,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report-json",
         type=Path,
-        help="Write a machine-readable report with path, size, and sha256.",
+        help="Write a machine-readable report with archive type, path, size, and sha256.",
     )
     parser.add_argument(
         "--json-only",
@@ -425,6 +435,7 @@ def main() -> int:
             print(f"Subscription check: {check_result} ({RESULT_MESSAGES.get(check_result)})")
         if output_path:
             print(f"Downloaded archive: {output_path}")
+            print(f"Archive type: {report['archive_type']}")
             print(f"Size: {report['size']}")
             print(f"SHA256: {report['sha256']}")
     return 0

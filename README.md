@@ -25,7 +25,7 @@ Odyssey makes the release contract explicit:
 - OCA, customer, Enterprise, and third-party addon sources are materialized once
   during the derived-image build flow;
 - Enterprise can be used without distributing Enterprise source: a valid
-  operator imports an Odoo Enterprise ZIP into a private Git mirror/cache, then
+  operator imports an Odoo Enterprise source archive into a private Git mirror/cache, then
   Odyssey consumes that private Git source like any other locked repository;
 - the generated addon path is baked into the final image;
 - build-only tools stay out of the runtime image;
@@ -77,7 +77,7 @@ The intended Enterprise flow is:
 
 ```text
 valid Odoo subscription
-  -> Odoo Enterprise ZIP download
+  -> Odoo Enterprise source archive download
   -> import/classification tool
   -> private Enterprise Git mirror/cache
   -> derived image repos.yaml
@@ -85,8 +85,8 @@ valid Odoo subscription
   -> final OCI image
 ```
 
-The Enterprise ZIP is acquisition input only. It has a file hash, not a Git
-commit. The import tool records that ZIP hash, compares against the exact
+The Enterprise archive is acquisition input only. It has a file hash, not a Git
+commit. The import tool records that archive hash, compares against the exact
 Community commit used by the deployment, keeps only Enterprise source, and
 can commit the result to a clean private Git repository controlled by the
 deployment operator/customer.
@@ -199,8 +199,8 @@ repository:
 
 ```text
 tools/lock-repos                         -> generates repos.lock.yaml
-tools/odoo-enterprise-download           -> downloads Enterprise ZIPs outside builds
-tools/odoo-enterprise-import             -> imports Enterprise ZIPs into private Git source
+tools/odoo-enterprise-download           -> downloads Enterprise source archives outside builds
+tools/odoo-enterprise-import             -> imports Enterprise archives into private Git source
 images/builder/scripts/odoo-build-image  -> single source-build execution for a derived image release
 images/builder/scripts/odoo-generate-addons-path
   -> generates /etc/odoo/addons_path from repos.lock.yaml + materialized source tree
