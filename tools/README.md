@@ -57,7 +57,7 @@ tools/odoo-enterprise-import \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
-  --review-decisions workdir/enterprise-review-decisions.yaml \
+  --confirm-community-refresh \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -82,61 +82,38 @@ The command fails when the Enterprise payload is not an exhaustive superset of
 the locked Community source, or when the local Community checkout is not at the
 locked revision. Matching Community modules that drift byte-for-byte are
 reported as warnings because Odoo controls the ZIP generation and it may not
-match our current Community lock exactly. Extra ZIP modules are reported as
-`candidate_enterprise_modules`; review them before import because an extra name
-can also mean the ZIP came from a newer Community snapshot.
+match our current Community lock exactly.
 
-For candidate modules, the tool also reads the module manifest with
-`ast.literal_eval` and reports the manifest license. Candidate modules with a
-proprietary Odoo license such as `OEEL-1` or `OPL-1` are also reported under
-`confirmed_enterprise_modules`; candidates without a proprietary license remain
-under `candidate_enterprise_review_modules` and need manual review.
+The normal Enterprise import workflow requires refreshing the Community lock
+first:
+
+```bash
+tools/lock-repos --refresh ./odoo
+```
+
+Then materialize/use that locked Community source and run this tool with
+`--confirm-community-refresh`. The importer intentionally trusts the refreshed
+Community lock as the source of truth: every downloaded module absent from that
+Community checkout is treated as Enterprise. No manual module-classification
+file is used.
+
+The tool still reads each Enterprise module manifest with `ast.literal_eval`
+and reports the manifest license as useful metadata, but license is no longer
+used to decide whether a module is Enterprise. Community membership decides.
 
 If `--current-src` points to the current private/internal source repository,
 the report also contains an `import_plan` with dry-run actions:
 
-- `add`: candidate modules not present in the current Enterprise source;
-- `update`: candidate modules present in both places but with different tree
+- `add`: Enterprise modules not present in the current Enterprise source;
+- `update`: Enterprise modules present in both places but with different tree
   hashes;
-- `remove`: current Enterprise source modules absent from the current candidate
+- `remove`: current Enterprise source modules absent from the current Enterprise
   set;
-- `unchanged`: candidate modules already identical in the current Enterprise
+- `unchanged`: Enterprise modules already identical in the current Enterprise
   source.
 
-The plan is still review-only. In particular, removals and candidates without a
-proprietary manifest license must be reviewed before any future `--apply` mode.
-
-For ambiguous candidates, use a versioned review decisions file instead of
-hardcoding the choice in the source tree. This lets the operator explicitly say
-whether a downloaded extra module is Enterprise or Community:
-
-```yaml
-modules:
-  new_common_candidate:
-    classification: community  # enterprise|community
-    reason: "Appears to be a newer Community module; refresh Community next"
-  account_accountant:
-    classification: enterprise
-    reason: "Confirmed by Odoo proprietary license"
-```
-
-Run with `--review-decisions <file>`. Modules classified as `enterprise` are
-included in the import plan. Modules classified as `community` are excluded
-from the Enterprise import plan. If a future download contradicts a previous
-decision, for example the module later carries `OEEL-1` while the decision says
-`community`, the tool keeps running but reports a review-decision conflict so
-the decision can be corrected.
-
-To create a starting point for manual review, use:
-
-```bash
-tools/odoo-enterprise-import ... \
-  --write-review-template workdir/enterprise-review-decisions.yaml
-```
-
-The human summary lists the concrete modules that still need review, the
-current-source modules planned as removals, stale/unused decisions, and any
-decision conflicts.
+The plan is still review-only. Removals must be reviewed before any future
+`--apply` mode.
 
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.
