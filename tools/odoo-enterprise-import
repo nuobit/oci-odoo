@@ -19,6 +19,7 @@ The import phase is deliberately separate from image builds:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import subprocess
@@ -35,6 +36,11 @@ import yaml
 
 IGNORED_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 IGNORED_SUFFIXES = {".pyc", ".pyo"}
+PROPRIETARY_LICENSES = {"OEEL-1", "OPL-1"}
+PROPRIETARY_LICENSE_MARKERS = (
+    "enterprise edition license",
+    "proprietary",
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,7 @@ class ModuleInfo:
     path: Path
     root: Path
     digest: str
+    license: str | None
 
 
 def sha256_file(path: Path) -> str:
@@ -118,8 +125,42 @@ def git_head(path: Path) -> str | None:
     return result.stdout.strip()
 
 
+def module_manifest_path(path: Path) -> Path | None:
+    for filename in ("__manifest__.py", "__openerp__.py"):
+        manifest_path = path / filename
+        if manifest_path.is_file():
+            return manifest_path
+    return None
+
+
 def is_module_dir(path: Path) -> bool:
-    return (path / "__manifest__.py").is_file() or (path / "__openerp__.py").is_file()
+    return module_manifest_path(path) is not None
+
+
+def manifest_license(path: Path) -> str | None:
+    manifest_path = module_manifest_path(path)
+    if manifest_path is None:
+        return None
+    try:
+        data = ast.literal_eval(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    license_value = data.get("license")
+    if not isinstance(license_value, str):
+        return None
+    return license_value.strip() or None
+
+
+def is_proprietary_license(license_value: str | None) -> bool:
+    if license_value is None:
+        return False
+    normalized = license_value.strip()
+    if normalized in PROPRIETARY_LICENSES:
+        return True
+    lowered = normalized.lower()
+    return any(marker in lowered for marker in PROPRIETARY_LICENSE_MARKERS)
 
 
 def source_root(path: Path) -> Path:
@@ -165,7 +206,13 @@ def collect_modules(source: Path) -> dict[str, ModuleInfo]:
             if child.name in modules:
                 duplicate_names.setdefault(child.name, [modules[child.name].path]).append(child)
                 continue
-            modules[child.name] = ModuleInfo(name=child.name, path=child, root=root, digest=digest)
+            modules[child.name] = ModuleInfo(
+                name=child.name,
+                path=child,
+                root=root,
+                digest=digest,
+                license=manifest_license(child),
+            )
 
     if duplicate_names:
         details = "\n".join(
@@ -268,6 +315,20 @@ def main() -> int:
             for name in matched_community
             if community_modules[name].digest != download_modules[name].digest
         ]
+        candidate_details = {
+            name: {
+                "license": download_modules[name].license,
+                "license_is_proprietary": is_proprietary_license(download_modules[name].license),
+                "relative_path": download_modules[name].path.relative_to(enterprise_src).as_posix(),
+            }
+            for name in candidate_enterprise
+        }
+        confirmed_enterprise = sorted(
+            name for name, details in candidate_details.items() if details["license_is_proprietary"]
+        )
+        review_candidates = sorted(
+            name for name, details in candidate_details.items() if not details["license_is_proprietary"]
+        )
         recommendations: list[str] = []
         if missing_community:
             recommendations.extend(
@@ -288,6 +349,14 @@ def main() -> int:
             recommendations.append(
                 "Review candidate Enterprise modules; if any are actually newer Community modules, refresh Community and retry."
             )
+        if confirmed_enterprise:
+            recommendations.append(
+                "Modules with a proprietary manifest license can be treated as confirmed Enterprise import modules."
+            )
+        if review_candidates:
+            recommendations.append(
+                "Candidate modules without a proprietary manifest license need manual review before import."
+            )
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -306,10 +375,15 @@ def main() -> int:
                 "missing_community_modules": len(missing_community),
                 "drifted_community_modules": len(drifted_community),
                 "candidate_enterprise_modules": len(candidate_enterprise),
+                "confirmed_enterprise_modules": len(confirmed_enterprise),
+                "candidate_enterprise_review_modules": len(review_candidates),
             },
             "missing_community_modules": missing_community,
             "drifted_community_modules": sorted(drifted_community),
             "candidate_enterprise_modules": candidate_enterprise,
+            "confirmed_enterprise_modules": confirmed_enterprise,
+            "candidate_enterprise_review_modules": review_candidates,
+            "candidate_enterprise_details": candidate_details,
             "recommendations": recommendations,
         }
 

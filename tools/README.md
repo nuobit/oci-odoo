@@ -73,6 +73,12 @@ match our current Community lock exactly. Extra ZIP modules are reported as
 `candidate_enterprise_modules`; review them before import because an extra name
 can also mean the ZIP came from a newer Community snapshot.
 
+For candidate modules, the tool also reads the module manifest with
+`ast.literal_eval` and reports the manifest license. Candidate modules with a
+proprietary Odoo license such as `OEEL-1` or `OPL-1` are also reported under
+`confirmed_enterprise_modules`; candidates without a proprietary license remain
+under `candidate_enterprise_review_modules` and need manual review.
+
 The old local proof of concept for downloading from odoo.com proved the
 separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
 check, and following the CDN payload link when Odoo returns an HTML download
