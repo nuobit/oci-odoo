@@ -38,6 +38,43 @@ Use `--refresh <dest>` to move every merge under one aggregate destination. Use
 
 If a merge is being added for the first time, plain `lock-repos` is enough.
 
+### `odoo-enterprise-import`
+
+Dry-runs an Odoo Enterprise source ZIP or already extracted source directory
+against the exact Community checkout selected by `repos.lock.yaml`.
+
+This tool is the first step of the Enterprise mirror flow. It does not download
+from odoo.com and it does not write Git commits yet. It answers the question:
+"given this Enterprise payload and this locked Community source, which modules
+are Enterprise-only and can be imported into the private Enterprise Git repo?"
+
+Example:
+
+```bash
+tools/odoo-enterprise-import \
+  --zip /path/to/odoo-enterprise-17.zip \
+  --community-src /path/to/materialized/src/odoo \
+  --repos-lock repos.lock.yaml \
+  --report-json workdir/enterprise-import-report.json
+```
+
+The report records three separate identities:
+
+- `zip_sha256`: the downloaded Enterprise ZIP identity;
+- `community_lock_revision`: the Community commit from `repos.lock.yaml`;
+- `community_worktree_head`: the local Community checkout used for comparison.
+
+The command fails when the Enterprise payload is not an exhaustive superset of
+Community, when matching Community modules drift byte-for-byte, or when the
+local Community checkout is not at the locked revision. Override flags exist
+only for reviewed exceptions.
+
+The old local proof of concept for downloading from odoo.com proved the
+separate acquisition mechanics: HTTP session warm-up, subscription JSON-RPC
+check, and following the CDN payload link when Odoo returns an HTML download
+page. Keep that acquisition step separate from Docker builds and from this
+classification/import validation.
+
 ### `update-base-image-digest`
 
 Updates the pinned digest in `images/runtime/Dockerfile` for the selected

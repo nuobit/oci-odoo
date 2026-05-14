@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Inspect an Odoo Enterprise source archive before importing it to Git.
+
+This first implementation is intentionally dry-run only. It validates the
+source archive against the exact Community source selected by repos.lock.yaml
+and reports what would become the Enterprise-only addon set.
+
+The import phase is deliberately separate from image builds:
+- this tool handles ZIP acquisition/classification/import preparation;
+- Dockerfile.source-build consumes only Git repositories pinned in
+  repos.lock.yaml.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+IGNORED_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+IGNORED_SUFFIXES = {".pyc", ".pyo"}
+
+
+@dataclass(frozen=True)
+class ModuleInfo:
+    name: str
+    path: Path
+    root: Path
+    digest: str
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_tree(path: Path) -> str:
+    digest = hashlib.sha256()
+    files: list[Path] = []
+    for item in path.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(path)
+        if any(part in IGNORED_DIRS for part in rel.parts):
+            continue
+        if item.suffix in IGNORED_SUFFIXES:
+            continue
+        files.append(item)
+
+    for item in sorted(files, key=lambda value: value.relative_to(path).as_posix()):
+        rel = item.relative_to(path).as_posix()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(item.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: expected a YAML mapping")
+    return data
+
+
+def parse_remote_ref(value: str, *, context: str) -> tuple[str, str]:
+    parts = value.split(None, 1)
+    if len(parts) != 2:
+        raise SystemExit(f"{context}: expected '<remote> <ref>', got {value!r}")
+    return parts[0], parts[1]
+
+
+def locked_community_revision(lock_path: Path, community_dest: str) -> str:
+    lock = load_yaml(lock_path)
+    entry = lock.get(community_dest)
+    if not isinstance(entry, dict):
+        raise SystemExit(f"{lock_path}: missing community destination {community_dest!r}")
+    merges = entry.get("merges")
+    if not isinstance(merges, list) or len(merges) != 1:
+        raise SystemExit(f"{lock_path}: {community_dest}: expected exactly one locked merge")
+    merge = merges[0]
+    if not isinstance(merge, str):
+        raise SystemExit(f"{lock_path}: {community_dest}: expected string merge")
+    _remote, revision = parse_remote_ref(merge, context=f"{community_dest}: merge")
+    return revision
+
+
+def git_head(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
+
+
+def is_module_dir(path: Path) -> bool:
+    return (path / "__manifest__.py").is_file() or (path / "__openerp__.py").is_file()
+
+
+def source_root(path: Path) -> Path:
+    """Return the likely source root from an extracted ZIP directory."""
+    candidates = [path]
+    children = [child for child in path.iterdir() if child.is_dir()] if path.is_dir() else []
+    if len(children) == 1:
+        candidates.append(children[0])
+
+    for candidate in candidates:
+        if (candidate / "odoo" / "addons").is_dir() or (candidate / "addons").is_dir():
+            return candidate
+    return path
+
+
+def addon_roots(source: Path) -> list[Path]:
+    candidates = [
+        source / "odoo" / "addons",
+        source / "addons",
+        source,
+    ]
+    roots: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        if candidate == source and not any(is_module_dir(child) for child in candidate.iterdir() if child.is_dir()):
+            continue
+        roots.append(candidate)
+    return roots
+
+
+def collect_modules(source: Path) -> dict[str, ModuleInfo]:
+    modules: dict[str, ModuleInfo] = {}
+    duplicate_names: dict[str, list[Path]] = {}
+
+    for root in addon_roots(source):
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name in IGNORED_DIRS:
+                continue
+            if not is_module_dir(child):
+                continue
+            digest = sha256_tree(child)
+            if child.name in modules:
+                duplicate_names.setdefault(child.name, [modules[child.name].path]).append(child)
+                continue
+            modules[child.name] = ModuleInfo(name=child.name, path=child, root=root, digest=digest)
+
+    if duplicate_names:
+        details = "\n".join(
+            f"  {name}: {', '.join(str(path) for path in paths)}"
+            for name, paths in sorted(duplicate_names.items())
+        )
+        raise SystemExit(f"Duplicate module names found in {source}:\n{details}")
+    return modules
+
+
+def extract_zip(zip_path: Path, destination: Path) -> Path:
+    with zipfile.ZipFile(zip_path) as archive:
+        destination_resolved = destination.resolve()
+        for member in archive.infolist():
+            member_path = destination / member.filename
+            try:
+                member_path.resolve().relative_to(destination_resolved)
+            except ValueError as exc:
+                raise SystemExit(f"Unsafe ZIP member path: {member.filename!r}") from exc
+        archive.extractall(destination)
+    return source_root(destination)
+
+
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Dry-run an Odoo Enterprise ZIP/folder import against locked Community source.",
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--zip", dest="zip_path", type=Path, help="Enterprise ZIP downloaded from Odoo")
+    source.add_argument("--enterprise-src", type=Path, help="Already extracted Enterprise download root")
+    parser.add_argument("--community-src", type=Path, required=True, help="Local Odoo Community checkout/root")
+    parser.add_argument(
+        "--repos-lock",
+        type=Path,
+        required=True,
+        help="repos.lock.yaml that contains the Community commit used by this deployment",
+    )
+    parser.add_argument(
+        "--community-dest",
+        default="./odoo",
+        help="Destination key in repos.lock.yaml for Odoo Community (default: ./odoo)",
+    )
+    parser.add_argument("--report-json", type=Path, help="Write a machine-readable dry-run report")
+    parser.add_argument(
+        "--allow-community-content-drift",
+        action="store_true",
+        help="Report but do not fail when matching Community modules differ byte-for-byte",
+    )
+    parser.add_argument(
+        "--allow-community-head-mismatch",
+        action="store_true",
+        help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    lock_path = args.repos_lock.resolve()
+    community_src = source_root(args.community_src.resolve())
+
+    if not lock_path.is_file():
+        raise SystemExit(f"repos lock not found: {lock_path}")
+    if not community_src.is_dir():
+        raise SystemExit(f"community source not found: {community_src}")
+
+    community_revision = locked_community_revision(lock_path, args.community_dest)
+    community_head = git_head(community_src)
+    zip_sha256 = None
+    zip_size = None
+
+    with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
+        if args.zip_path:
+            zip_path = args.zip_path.resolve()
+            if not zip_path.is_file():
+                raise SystemExit(f"zip not found: {zip_path}")
+            zip_sha256 = sha256_file(zip_path)
+            zip_size = zip_path.stat().st_size
+            enterprise_src = extract_zip(zip_path, Path(tmp_name))
+        else:
+            enterprise_src = source_root(args.enterprise_src.resolve())
+
+        if not enterprise_src.is_dir():
+            raise SystemExit(f"enterprise source not found: {enterprise_src}")
+
+        community_modules = collect_modules(community_src)
+        download_modules = collect_modules(enterprise_src)
+        if not community_modules:
+            raise SystemExit(f"No Community modules found in {community_src}")
+        if not download_modules:
+            raise SystemExit(f"No downloaded modules found in {enterprise_src}")
+
+        community_names = set(community_modules)
+        download_names = set(download_modules)
+        missing_community = sorted(community_names - download_names)
+        enterprise_only = sorted(download_names - community_names)
+        matched_community = sorted(community_names & download_names)
+        drifted_community = [
+            name
+            for name in matched_community
+            if community_modules[name].digest != download_modules[name].digest
+        ]
+
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "dry-run",
+            "zip_sha256": zip_sha256,
+            "zip_size": zip_size,
+            "enterprise_source": str(enterprise_src),
+            "community_source": str(community_src),
+            "community_dest": args.community_dest,
+            "community_lock_revision": community_revision,
+            "community_worktree_head": community_head,
+            "counts": {
+                "community_modules": len(community_modules),
+                "download_modules": len(download_modules),
+                "matched_community_modules": len(matched_community),
+                "missing_community_modules": len(missing_community),
+                "drifted_community_modules": len(drifted_community),
+                "enterprise_only_modules": len(enterprise_only),
+            },
+            "missing_community_modules": missing_community,
+            "drifted_community_modules": sorted(drifted_community),
+            "enterprise_only_modules": enterprise_only,
+        }
+
+        if args.report_json:
+            write_report(args.report_json, report)
+
+        print(json.dumps(report, indent=2, sort_keys=True))
+
+        if missing_community:
+            print(
+                "ERROR: Enterprise download is not an exhaustive superset of Community.",
+                file=sys.stderr,
+            )
+            return 2
+        if drifted_community and not args.allow_community_content_drift:
+            print(
+                "ERROR: Matching Community modules differ from the locked Community source. "
+                "Use --allow-community-content-drift only after reviewing the report.",
+                file=sys.stderr,
+            )
+            return 3
+        if community_head and community_head != community_revision:
+            message = "Community worktree HEAD differs from repos.lock.yaml revision."
+            if not args.allow_community_head_mismatch:
+                print(
+                    f"ERROR: {message} Use --allow-community-head-mismatch only after review.",
+                    file=sys.stderr,
+                )
+                return 4
+            print(f"WARNING: {message}", file=sys.stderr)
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
