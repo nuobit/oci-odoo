@@ -96,10 +96,10 @@ source directory against the exact Community checkout selected by
 
 This tool is the Enterprise mirror import flow. It does not download from
 odoo.com. By default it is a dry-run and answers the question: "given this
-Enterprise payload and this locked Community source, which modules are
-Enterprise candidates and what would change in the private Enterprise Git repo?"
-With `--apply`, it writes those changes into a clean local Enterprise Git
-worktree.
+Enterprise payload and this pinned official Community source, which modules are
+Enterprise candidates and what would change in the private Enterprise Git
+repo?" With `--apply`, it writes those changes into a clean local Enterprise
+Git worktree.
 
 Example:
 
@@ -109,7 +109,6 @@ tools/odoo-enterprise-import \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
-  --yes \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -121,8 +120,7 @@ tools/odoo-enterprise-import \
   --download-src /path/to/extracted/odoo-enterprise-download \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
-  --current-src /path/to/private/odoo-enterprise \
-  --yes
+  --current-src /path/to/private/odoo-enterprise
 ```
 
 The report records three separate identities:
@@ -135,10 +133,10 @@ The report records three separate identities:
 reports. New callers should use the `archive_*` fields.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
-the locked Community source, or when the local Community checkout is not at the
-locked revision. Matching Community modules that drift byte-for-byte are
-reported as warnings because Odoo controls the archive generation and it may not
-match our current Community lock exactly.
+the pinned official Community source, or when the local Community checkout is
+not at the pinned revision. Matching module names whose Enterprise archive copy
+differs byte-for-byte from the pinned official Community source are reported as
+Enterprise archive drift.
 
 The normal safe Enterprise import workflow is to refresh the Community lock
 first:
@@ -147,17 +145,15 @@ first:
 tools/lock-repos --refresh ./odoo
 ```
 
-Then materialize/use that locked Community source. The importer intentionally
+Then materialize/use that pinned Community source. The importer intentionally
 trusts the Community source passed with `--community-src` as the source of
-truth: every downloaded module absent from that Community checkout is treated as
-Enterprise. No manual module-classification file is used.
+truth: every downloaded module absent from that Community checkout is treated
+as Enterprise. No manual module-classification file is used.
 
-When run interactively, the command prints this Enterprise import rule and asks
-for confirmation before continuing. The warning says plainly that the command
-imports Enterprise as `downloaded Odoo source - Community source`; therefore an
-outdated `--community-src` can make normal Community modules enter the private
-Enterprise mirror by mistake. In scripts/CI, pass `--yes` to acknowledge that
-warning explicitly and avoid a prompt.
+The importer never asks interactive risk-confirmation questions. Risky states
+fail with a clear error and require an explicit flag on the next run. Enterprise
+archive drift aborts by default. If the operator has refreshed Community,
+reviewed the listed modules, and accepts the drift, rerun with `--allow-drift`.
 
 The tool still reads each Enterprise module manifest with `ast.literal_eval`
 and reports the manifest license as useful metadata, but license is no longer
@@ -184,7 +180,6 @@ tools/odoo-enterprise-import \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
   --apply \
-  --yes \
   --report-json workdir/enterprise-import-report.json
 ```
 
@@ -198,6 +193,11 @@ Apply mode creates:
 Removals require the explicit `--apply-removals` flag. This prevents accidental
 deletion when a stale or incomplete Enterprise download is reviewed too quickly.
 The command refuses to apply if `--current-src` is not a clean Git worktree.
+
+Enterprise archive drift requires the explicit `--allow-drift` flag. The
+importer is an Enterprise tool, so the short flag name is enough; the error text
+spells out that the drift is the archive's embedded Community copy differing
+from the freshly pinned official Odoo Community source.
 
 By default, the command prints a short human summary followed by the full JSON
 report. Use `--json-only` when stdout must be machine-parseable JSON only.

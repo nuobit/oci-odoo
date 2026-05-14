@@ -414,11 +414,11 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     if counts["missing_community_modules"]:
         warnings.append(
-            f"{counts['missing_community_modules']} locked Community module(s) are missing from the download"
+            f"{counts['missing_community_modules']} pinned official Community module(s) are missing from the download"
         )
-    if counts["drifted_community_modules"]:
+    if counts["enterprise_drift_modules"]:
         warnings.append(
-            f"{counts['drifted_community_modules']} matching Community module(s) drift byte-for-byte"
+            f"{counts['enterprise_drift_modules']} Enterprise archive embedded-Community module(s) drift byte-for-byte"
         )
     if plan["remove"]:
         warnings.append(f"{plan['remove']} current module(s) are planned as removal")
@@ -431,6 +431,7 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
         "download_modules": counts["download_modules"],
         "current_modules": counts["current_modules"],
         "enterprise_modules": counts["enterprise_modules"],
+        "enterprise_drift_modules": report["enterprise_drift_modules"],
         "plan": {
             "add": plan["add"],
             "update": plan["update"],
@@ -474,44 +475,10 @@ def print_human_summary(summary: dict[str, Any]) -> None:
     print()
 
 
-def confirm_enterprise_import(args: argparse.Namespace, community_src: Path) -> bool:
-    if args.yes:
-        return True
-
-    message = "\n".join(
-        [
-            "Odoo Enterprise import warning",
-            "------------------------------",
-            f"Community source: {community_src}",
-            "",
-            "This command imports Enterprise modules by comparing two source trees:",
-            "",
-            "  Enterprise modules to import = downloaded Odoo source - Community source",
-            "",
-            "That means the Community source you pass with --community-src is the source of truth.",
-            "If --community-src is outdated, this command may import normal Community modules as Enterprise modules.",
-            "",
-            "Recommended before continuing:",
-            "  1. Refresh the Odoo Community lock, for example: tools/lock-repos --refresh ./odoo",
-            "  2. Use the materialized Community source from that refreshed lock as --community-src",
-            "",
-            "The command will not refresh Community for you.",
-            "",
-        ]
-    )
-
-    if not sys.stdin.isatty():
-        print(message, file=sys.stderr)
-        print(
-            "ERROR: non-interactive Enterprise import requires --yes to confirm this warning.",
-            file=sys.stderr,
-        )
-        return False
-
-    print(message, file=sys.stderr)
-    print("Continue Enterprise import? [y/N] ", end="", file=sys.stderr, flush=True)
-    answer = sys.stdin.readline().strip().lower()
-    return answer in {"y", "yes"}
+def format_modules_for_error(module_names: list[str], *, limit: int = 50) -> str:
+    visible = module_names[:limit]
+    suffix = "" if len(module_names) <= limit else f", ... ({len(module_names) - limit} more)"
+    return ", ".join(visible) + suffix
 
 
 def commit_message_for(action: str, module: str, date: str) -> str:
@@ -553,6 +520,7 @@ def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
         "community_source_used_as_import_reference": report["community_source_used_as_import_reference"],
         "counts": report["counts"],
         "missing_community_modules": report["missing_community_modules"],
+        "enterprise_drift_modules": report["enterprise_drift_modules"],
         "drifted_community_modules": report["drifted_community_modules"],
         "enterprise_modules": report["enterprise_modules"],
         "enterprise_details": report["enterprise_details"],
@@ -651,7 +619,7 @@ def apply_import_plan(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Inspect or apply an Odoo Enterprise archive/folder import against locked Community source.",
+        description="Inspect or apply an Odoo Enterprise archive/folder import against pinned official Community source.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--archive", dest="archive_path", type=Path, help="Enterprise source archive")
@@ -695,9 +663,12 @@ def parse_args() -> argparse.Namespace:
         help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
     )
     parser.add_argument(
-        "--yes",
+        "--allow-drift",
         action="store_true",
-        help="Do not prompt before treating --community-src as the Enterprise import reference",
+        help=(
+            "Allow import to continue when the Enterprise archive embeds Community module copies "
+            "that differ from the freshly pinned official Odoo Community source"
+        ),
     )
     parser.add_argument(
         "--apply",
@@ -739,10 +710,6 @@ def main() -> int:
         if not current_src.is_dir():
             raise SystemExit(f"current source not found: {current_src}")
 
-    if not confirm_enterprise_import(args, community_src):
-        print("Enterprise import aborted.", file=sys.stderr)
-        return 5
-
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
         if args.archive_path:
             archive_path = args.archive_path.resolve()
@@ -772,7 +739,7 @@ def main() -> int:
         missing_community = sorted(community_names - download_names)
         enterprise_modules = sorted(download_names - community_names)
         matched_community = sorted(community_names & download_names)
-        drifted_community = [
+        enterprise_drift = [
             name
             for name in matched_community
             if community_modules[name].digest != download_modules[name].digest
@@ -804,11 +771,11 @@ def main() -> int:
                     "Ensure --community-src was materialized from the same repos.lock.yaml being checked.",
                 ]
             )
-        if drifted_community:
+        if enterprise_drift:
             recommendations.extend(
                 [
-                    "Review drifted Community modules before importing.",
-                    "If the archive was generated from a newer Community snapshot, refresh the Community lock and retry.",
+                    "Refresh Odoo Community from the official Odoo GitHub repository and retry.",
+                    "If Enterprise archive drift remains after refresh, review the listed modules and rerun with --allow-drift.",
                 ]
             )
         if enterprise_modules:
@@ -840,12 +807,14 @@ def main() -> int:
                 "download_modules": len(download_modules),
                 "matched_community_modules": len(matched_community),
                 "missing_community_modules": len(missing_community),
-                "drifted_community_modules": len(drifted_community),
+                "enterprise_drift_modules": len(enterprise_drift),
+                "drifted_community_modules": len(enterprise_drift),
                 "enterprise_modules": len(enterprise_modules),
                 "current_modules": len(current_modules),
             },
             "missing_community_modules": missing_community,
-            "drifted_community_modules": sorted(drifted_community),
+            "enterprise_drift_modules": sorted(enterprise_drift),
+            "drifted_community_modules": sorted(enterprise_drift),
             "enterprise_modules": enterprise_modules,
             "enterprise_details": enterprise_details,
             "import_plan": import_plan,
@@ -856,11 +825,21 @@ def main() -> int:
         if args.apply:
             if missing_community:
                 print(
-                    "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
+                    "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
                     "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
                     file=sys.stderr,
                 )
                 return 2
+            if enterprise_drift and not args.allow_drift:
+                print(
+                    "ERROR: Enterprise archive drift detected. The archive embeds Community module copies "
+                    "that differ from the freshly pinned official Odoo Community source. "
+                    "Refresh Odoo Community with lock-repos --refresh ./odoo and retry. "
+                    "If reviewed and accepted, rerun with --allow-drift. "
+                    f"Affected modules: {format_modules_for_error(sorted(enterprise_drift))}",
+                    file=sys.stderr,
+                )
+                return 3
             if community_head and community_head != community_revision and not args.allow_community_head_mismatch:
                 print(
                     "ERROR: Community worktree HEAD differs from repos.lock.yaml revision. "
@@ -885,15 +864,24 @@ def main() -> int:
 
         if missing_community:
             print(
-                "ERROR: Enterprise download is not an exhaustive superset of the locked Community source. "
+                "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
                 "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
                 file=sys.stderr,
             )
             return 2
-        if drifted_community:
+        if enterprise_drift and not args.allow_drift:
             print(
-                "WARNING: Matching Community modules differ from the locked Community source. "
-                "Review before importing; this may mean the archive and Community lock are from different snapshots.",
+                "ERROR: Enterprise archive drift detected. The archive embeds Community module copies "
+                "that differ from the freshly pinned official Odoo Community source. "
+                "Refresh Odoo Community with lock-repos --refresh ./odoo and retry. "
+                "If reviewed and accepted, rerun with --allow-drift. "
+                f"Affected modules: {format_modules_for_error(sorted(enterprise_drift))}",
+                file=sys.stderr,
+            )
+            return 3
+        if enterprise_drift:
+            print(
+                "WARNING: Enterprise archive drift accepted with --allow-drift.",
                 file=sys.stderr,
             )
         if community_head and community_head != community_revision:
