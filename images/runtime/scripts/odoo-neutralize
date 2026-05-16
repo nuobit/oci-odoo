@@ -24,8 +24,11 @@ effects before exposing a preview/test copy.
 USAGE
 }
 
-if [[ $# -lt 1 ]]; then
+if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
+    if [[ $# -ge 1 ]]; then
+        exit 0
+    fi
     exit 2
 fi
 

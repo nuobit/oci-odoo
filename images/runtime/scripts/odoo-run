@@ -75,6 +75,25 @@ cleanup_runtime_options_file() {
 
 trap cleanup_runtime_options_file EXIT
 
+exec_odoo() {
+    local config_arg="$1"
+    shift
+
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        local cli_command="$1"
+        shift
+        if [[ -n "${config_arg}" ]]; then
+            exec "${python_bin}" "${odoo_bin}" "${cli_command}" -c "${config_arg}" "$@"
+        fi
+        exec "${python_bin}" "${odoo_bin}" "${cli_command}" "$@"
+    fi
+
+    if [[ -n "${config_arg}" ]]; then
+        exec "${python_bin}" "${odoo_bin}" -c "${config_arg}" "$@"
+    fi
+    exec "${python_bin}" "${odoo_bin}" "$@"
+}
+
 append_option() {
     local key="$1"
     local value="$2"
@@ -257,11 +276,11 @@ if [[ "${ODOO_GENERATE_CONFIG:-auto}" == "1" || "${needs_runtime_config}" == "1"
     render_runtime_config "${base_config_file}" "${runtime_options_file}" "${runtime_rc}"
     cleanup_runtime_options_file
 
-    exec "${python_bin}" "${odoo_bin}" -c "${runtime_rc}" "$@"
+    exec_odoo "${runtime_rc}" "$@"
 fi
 
 if [[ -n "${config_file}" && -f "${config_file}" ]]; then
-    exec "${python_bin}" "${odoo_bin}" -c "${config_file}" "$@"
+    exec_odoo "${config_file}" "$@"
 fi
 
-exec "${python_bin}" "${odoo_bin}" "$@"
+exec_odoo "" "$@"

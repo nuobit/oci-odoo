@@ -116,6 +116,11 @@ source tree.
 
 `odoo-run` is the normal long-running entrypoint.
 
+When wrapping Odoo CLI subcommands, `odoo-run` preserves Odoo's command order:
+`odoo-bin <command> -c <generated-config> ...`. Do not move `-c` before the
+command; Odoo treats that as the default `server` command and rejects
+subcommands such as `shell` or `neutralize`.
+
 `odoo-init` is an explicit operator tool for the special case where a
 PostgreSQL database exists but is completely empty and must be initialized as
 an Odoo database:
