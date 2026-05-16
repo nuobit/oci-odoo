@@ -7,7 +7,8 @@
 The command is dry-run by default. It validates the source bundle against the
 exact Community source selected by repos.lock.yaml and reports the modules that
 are not present in that Community source. With --apply, it writes those
-Enterprise modules into a local private Enterprise Git worktree.
+Enterprise modules into a local private Enterprise Git worktree and refreshes
+the mirror README source-bundle identity block when --source-bundle is used.
 
 The import phase is deliberately separate from image builds:
 - this tool handles source bundle acquisition/classification/import preparation;
@@ -1115,7 +1116,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Apply the import plan to --current-src and create Git commits",
+        help=(
+            "Apply the import plan to --current-src, create Git commits, and refresh "
+            "the mirror README source-bundle identity block when --source-bundle is used"
+        ),
     )
     parser.add_argument(
         "--apply-removals",
