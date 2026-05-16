@@ -91,9 +91,10 @@ RUN apt-get update \
 COPY images/runtime/scripts/odoo-run /usr/local/bin/odoo-run
 COPY images/runtime/scripts/odoo-init /usr/local/bin/odoo-init
 COPY images/runtime/scripts/odoo-update /usr/local/bin/odoo-update
+COPY images/runtime/scripts/odoo-neutralize /usr/local/bin/odoo-neutralize
 COPY images/runtime/scripts/odoo-shell /usr/local/bin/odoo-shell
 
-RUN chmod 0755 /usr/local/bin/odoo-run /usr/local/bin/odoo-init /usr/local/bin/odoo-update /usr/local/bin/odoo-shell
+RUN chmod 0755 /usr/local/bin/odoo-run /usr/local/bin/odoo-init /usr/local/bin/odoo-update /usr/local/bin/odoo-neutralize /usr/local/bin/odoo-shell
 
 VOLUME ["/var/lib/odoo"]
 EXPOSE 8069 8071 8072

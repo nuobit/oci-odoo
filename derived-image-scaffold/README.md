@@ -261,19 +261,73 @@ package in the base images.
 
 Build flow:
 
-If `repos.lock.yaml` references private HTTPS GitHub repositories, pass
-credentials as a BuildKit secret. The committed Dockerfile exposes only the
-secret identifier (`git_credentials`), never the credential contents nor the
-operator's host path.
+If `repos.lock.yaml` references private HTTPS repositories, pass credentials as
+a BuildKit secret. BuildKit is Docker's build engine; its secret mount lets the
+builder read a local credential file during the source-fetching `RUN` without
+copying that file into the source-build image, final image, Docker layers, or
+Git. The committed Dockerfile exposes only the secret identifier
+(`git_credentials`), never the credential contents nor the operator's host path.
 
-For a new workstation or cleaner build identity, create a separate read-only
-build token and store it in a dedicated local secret file:
+Use a dedicated source-build credential file, not the operator's normal
+`~/.git-credentials`, as the standard procedure. For deployments with private
+source repos, internal source mirrors, and private registry images, keep these
+credential roles separate:
+
+```text
+source-build read tokens
+  read private source repos during Dockerfile.source-build
+  suggested name: oci-odoo-<client-key>-source-builder
+  stored in ~/.config/oci-odoo/credentials/<client-key>-source-builder.git-credentials
+  passed to docker build as BuildKit secret git_credentials
+  owned by the real developer/build runner that executes the build
+
+source update write tokens
+  push refreshed source mirrors, for example an internal Enterprise mirror
+  suggested name: <client-key>-enterprise-source-update
+  stored in ~/.config/oci-odoo/credentials/<client-key>-enterprise-update.git-credentials
+  used by the human/operator running the update workflow
+  owned by the real developer/operator so commits remain attributable
+
+registry pull tokens
+  let Kubernetes pull private OCI images from GHCR or another registry
+  suggested name: <client-key>-ghcr-pull for GHCR
+  stored as Kubernetes registry-pull Secret, not in Git credentials
+  owned by the client/operations runtime account when available
+```
+
+Do not put write tokens in the source-build credential file. A developer may be
+able to `git ls-remote` or push with their normal Git credentials and still see
+the Docker build fail. That means the dedicated source-build credential file is
+missing one of the read entries required by `repos.lock.yaml`; fix that file
+instead of switching the build to personal credentials.
+
+Do not merge the source-build read token with the source-update write token
+even when both point to the same internal Git host. The build only needs read
+access; giving it write access makes revocation and audit unclear and exposes a
+stronger credential to Docker than necessary.
+
+Keep source-build and source-update credential files separate:
+
+```text
+~/.config/oci-odoo/credentials/<client-key>-source-builder.git-credentials
+  read-only source-build input consumed by BuildKit
+
+~/.config/oci-odoo/credentials/<client-key>-enterprise-update.git-credentials
+  write credential used by explicit Enterprise/source mirror update commands
+```
+
+Do not rely on the operator's normal Git credential helper as part of the OCI
+Odoo build/update contract. It may exist and work for interactive Git, but the
+reproducible workflow should use explicit role-specific files.
+
+For a new workstation or cleaner build identity, create separate read-only
+build tokens and store them in a dedicated local secret file:
 
 `~/.config/oci-odoo/` is the default local operator configuration directory for
 OCI Odoo image builds. It is outside Git and can hold build-only credentials or
 future local build configuration. The directory is generic, but credential files
-should be scope-specific, for example
-`~/.config/oci-odoo/credentials/examplecorp.git-credentials`.
+should be role-specific, for example
+`~/.config/oci-odoo/credentials/examplecorp-source-builder.git-credentials`.
 
 ```bash
 mkdir -p "$HOME/.config/oci-odoo"
@@ -281,12 +335,13 @@ chmod 700 "$HOME/.config/oci-odoo"
 mkdir -p "$HOME/.config/oci-odoo/credentials"
 chmod 700 "$HOME/.config/oci-odoo/credentials"
 
-# Paste one line in Git credential-store format:
+# Paste one or more lines in Git credential-store format:
 # https://x-access-token:<TOKEN>@github.com
-$EDITOR "$HOME/.config/oci-odoo/credentials/<scope>.git-credentials"
-chmod 600 "$HOME/.config/oci-odoo/credentials/<scope>.git-credentials"
+# https://<GIT_HOST_USER>:<GIT_HOST_TOKEN>@<private-git-host>
+$EDITOR "$HOME/.config/oci-odoo/credentials/<client-key>-source-builder.git-credentials"
+chmod 600 "$HOME/.config/oci-odoo/credentials/<client-key>-source-builder.git-credentials"
 
-export GIT_CREDENTIALS_FILE="$HOME/.config/oci-odoo/credentials/<scope>.git-credentials"
+export GIT_CREDENTIALS_FILE="$HOME/.config/oci-odoo/credentials/<client-key>-source-builder.git-credentials"
 --secret id=git_credentials,src="$GIT_CREDENTIALS_FILE"
 ```
 
@@ -300,7 +355,7 @@ GitHub -> Settings -> Developer settings -> Personal access tokens
 
 ```text
 Token name:
-  OCI Odoo <Client> Source Build
+  oci-odoo-<client-key>-source-builder
 Resource owner:
   GitHub owner of the private repos
 Expiration:
@@ -319,10 +374,6 @@ Classic PATs are a fallback only; for private repositories they generally need
 the broad `repo` scope and cannot be limited to selected repositories like a
 fine-grained token.
 
-If the workstation already has a suitably limited `~/.git-credentials`, it can
-be used as that local secret source instead of duplicating the token. That
-choice belongs to the operator command, not to the Dockerfile.
-
 The secret is mounted only during the source-build `RUN`; it is not copied into
 the source-build image, final image, or Docker layers. Omit `--secret` when all
 repositories are public.
@@ -334,8 +385,9 @@ credentials file, delegates only `get` to `git credential-store`, and ignores
 secret. This avoids `.netrc`, `GIT_ASKPASS`, manual token parsing, and
 temporary credential copies in every derived Dockerfile.
 
-Before running the full build, validate the credential with one read-only Git
-operation against a selected private repo:
+Before running the full build, validate the exact credential file used by the
+build with read-only Git operations against every private host family in the
+lock:
 
 ```bash
 GIT_TERMINAL_PROMPT=0 \

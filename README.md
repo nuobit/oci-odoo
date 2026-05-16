@@ -164,6 +164,7 @@ images/runtime/
     odoo-run
     odoo-init
     odoo-update
+    odoo-neutralize
     odoo-shell
 
 images/builder/
@@ -403,8 +404,8 @@ Python 3.10-compatible runtimes.
 
 - Runtime image:
   - common runtime conventions;
-- generic scripts such as `odoo-run`, `odoo-init`, `odoo-update`, and
-  `odoo-shell`;
+- generic scripts such as `odoo-run`, `odoo-init`, `odoo-update`,
+  `odoo-neutralize`, and `odoo-shell`;
   - shared runtime dependencies that are truly generic;
   - generic non-secret configuration conventions;
   - the Python virtual environment used by deployment images to install Odoo
@@ -870,13 +871,22 @@ cd "$OCI_ODOO_WORKDIR/examplecorp/oci-odoo"
 
 "$OCI_ODOO_BASE_REPO/tools/lock-repos"
 
-# If repos.lock.yaml references private HTTPS GitHub repositories, create a
-# local Git credential-store file outside Git and pass it as a BuildKit secret:
+# If repos.lock.yaml references private HTTPS repositories, create a dedicated
+# local source-build credential-store file outside Git and pass it as a
+# BuildKit secret. Do not use the operator's normal ~/.git-credentials as the
+# standard procedure.
 #   https://x-access-token:<fine-grained-token-with-read-access>@github.com
+#   https://<git-host-user>:<read-token>@<private-git-host>
 #
 # The builder reads it with a read-only Git credential helper during the
 # source-build RUN. The secret is not copied into either image or any layer.
-export GIT_CREDENTIALS_FILE="$HOME/.config/oci-odoo/credentials/examplecorp.git-credentials"
+# Keep write tokens, such as tokens used to push an internal Enterprise mirror,
+# in a separate role-specific credential file under ~/.config/oci-odoo/credentials/,
+# not in this build credential file and not as an implicit dependency on the
+# operator's normal Git credentials.
+# Keep registry pull tokens, such as <client-key>-ghcr-pull, out of Git
+# credentials too; they belong in Kubernetes registry-pull Secrets.
+export GIT_CREDENTIALS_FILE="$HOME/.config/oci-odoo/credentials/examplecorp-source-builder.git-credentials"
 
 docker build \
   -f Dockerfile.source-build \

@@ -11,8 +11,8 @@ It contains only the common pieces needed to run an already-built Odoo release:
 - Debian/Python runtime dependencies;
 - `wkhtmltox` and common Odoo runtime packages;
 - the `odoo` user and filesystem contract;
-- generic runtime scripts such as `odoo-run`, `odoo-init`, `odoo-update`, and
-  `odoo-shell`;
+- generic runtime scripts such as `odoo-run`, `odoo-init`, `odoo-update`,
+  `odoo-neutralize`, and `odoo-shell`;
 - generic non-secret configuration conventions.
 
 For Odoo 17, this runtime line uses Debian trixie with Python 3.10 from the
@@ -107,9 +107,10 @@ config. This keeps runtime/secret-provided values authoritative without mutating
 the image or the deployment config file.
 
 This runtime config step may configure how the released image runs, but it must
-not build the release. `odoo-run`, `odoo-init`, `odoo-update`, and `odoo-shell`
-must not fetch Git repositories, run `gitaggregate`, install Python packages,
-mutate addons, or change the baked source tree.
+not build the release. `odoo-run`, `odoo-init`, `odoo-update`,
+`odoo-neutralize`, and `odoo-shell` must not fetch Git repositories, run
+`gitaggregate`, install Python packages, mutate addons, or change the baked
+source tree.
 
 ## Database Lifecycle Helpers
 
@@ -139,6 +140,21 @@ conventions as `odoo-run` and refuses to proceed when:
 
 Use `odoo-update <database> <modules|all>` for already-initialized Odoo
 databases.
+
+Use `odoo-neutralize <database>` for preview/test copies restored from
+production data:
+
+```bash
+odoo-neutralize <database>
+odoo-neutralize <database> --stdout
+```
+
+It calls Odoo's standard `neutralize` command through `odoo-run`, so it uses the
+same generated runtime config and Secret-file values as the normal container.
+The command executes `data/neutralize.sql` from installed modules. This is real
+Odoo neutralization, not only a banner, but it does not remove the need to
+review custom connectors or third-party side effects before exposing a copied
+database to users.
 
 For Kubernetes, a one-off empty-DB smoke can run `odoo-init` inside an existing
 Pod or in a dedicated Job that mounts the same ConfigMap and Secret files as

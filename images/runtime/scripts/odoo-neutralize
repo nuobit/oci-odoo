@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: odoo-neutralize <database> [extra odoo args...]
+
+Neutralize an Odoo database for preview/test use.
+
+This runs Odoo's standard neutralization command through odoo-run so it uses
+the same generated runtime config, addons path, and Secret-file conventions as
+the normal container.
+
+Examples:
+  odoo-neutralize odoo17_navalen
+  odoo-neutralize odoo17_navalen --stdout
+
+Neutralization executes data/neutralize.sql for installed modules. It is not a
+substitute for reviewing customer-specific connectors or third-party side
+effects before exposing a preview/test copy.
+USAGE
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 2
+fi
+
+database="$1"
+shift
+
+exec odoo-run neutralize -d "${database}" "$@"
