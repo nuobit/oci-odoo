@@ -21,6 +21,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,8 @@ PROPRIETARY_LICENSE_MARKERS = (
     "enterprise edition license",
     "proprietary",
 )
+SOURCE_BLOCK_START = "<!-- odoo-enterprise-source:start -->"
+SOURCE_BLOCK_END = "<!-- odoo-enterprise-source:end -->"
 
 
 @dataclass(frozen=True)
@@ -545,6 +548,55 @@ def source_bundle_kind(source_bundle_path: Path) -> str | None:
     return None
 
 
+def source_bundle_extension(source_bundle_path: Path, source_bundle_type: str | None) -> str:
+    name = source_bundle_path.name
+    for suffix in (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip"):
+        if name.endswith(suffix):
+            return suffix
+    if source_bundle_type == "zip":
+        return ".zip"
+    if source_bundle_type == "tar":
+        return ".tar"
+    return "".join(source_bundle_path.suffixes)
+
+
+def odoo_file_from_source_bundle(
+    source_bundle_path: Path,
+    source_bundle_type: str | None,
+    download_src: Path,
+) -> str:
+    extension = source_bundle_extension(source_bundle_path, source_bundle_type)
+    root_name = download_src.name
+    if root_name.startswith("odoo-") and "+e." in root_name:
+        return f"{root_name}{extension}"
+    return source_bundle_path.name
+
+
+def source_bundle_date(odoo_file: str, source_bundle_path: Path) -> str:
+    match = re.search(r"\+e\.(\d{8})", odoo_file)
+    if match:
+        raw = match.group(1)
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    return datetime.fromtimestamp(source_bundle_path.stat().st_mtime, timezone.utc).date().isoformat()
+
+
+def source_bundle_identity(
+    *,
+    source_bundle_path: Path,
+    source_bundle_type: str | None,
+    source_bundle_size: int,
+    source_bundle_sha256: str,
+    download_src: Path,
+) -> dict[str, Any]:
+    odoo_file = odoo_file_from_source_bundle(source_bundle_path, source_bundle_type, download_src)
+    return {
+        "odoo_file": odoo_file,
+        "date": source_bundle_date(odoo_file, source_bundle_path),
+        "size": source_bundle_size,
+        "sha256": source_bundle_sha256,
+    }
+
+
 def extract_tar_members(bundle: tarfile.TarFile, destination: Path) -> None:
     try:
         bundle.extractall(destination, filter="data")
@@ -557,6 +609,80 @@ def extract_tar_members(bundle: tarfile.TarFile, destination: Path) -> None:
 def write_report(path: Path, report: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def render_source_bundle_block(identity: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            SOURCE_BLOCK_START,
+            "Initial source bundle:",
+            "",
+            f"- Odoo file: `{identity['odoo_file']}`",
+            f"- Date: `{identity['date']}`",
+            f"- Size: `{identity['size']}` bytes",
+            "- SHA-256:",
+            f"  `{identity['sha256']}`",
+            SOURCE_BLOCK_END,
+        ]
+    )
+
+
+def replace_or_insert_source_bundle_block(readme_text: str, identity: dict[str, Any]) -> str:
+    block = render_source_bundle_block(identity)
+    if SOURCE_BLOCK_START in readme_text and SOURCE_BLOCK_END in readme_text:
+        pattern = re.compile(
+            rf"{re.escape(SOURCE_BLOCK_START)}.*?{re.escape(SOURCE_BLOCK_END)}",
+            re.DOTALL,
+        )
+        return pattern.sub(block, readme_text, count=1)
+
+    legacy_pattern = re.compile(
+        r"Initial source bundle:\n\n"
+        r"- Odoo file: `[^`]+`\n"
+        r"- Date: `[^`]+`\n"
+        r"- Size: `[^`]+` bytes\n"
+        r"- SHA-256:\n"
+        r"  `[^`]+`",
+        re.DOTALL,
+    )
+    if legacy_pattern.search(readme_text):
+        return legacy_pattern.sub(block, readme_text, count=1)
+
+    anchor = "The detailed import report is kept as an external operation record"
+    if anchor in readme_text:
+        return readme_text.replace(anchor, f"{block}\n\n{anchor}", 1)
+    return readme_text.rstrip() + "\n\n" + block + "\n"
+
+
+def update_source_bundle_readme(current_src: Path, identity: dict[str, Any]) -> dict[str, Any] | None:
+    readme_path = current_src / "README.md"
+    existing = readme_path.read_text(encoding="utf-8") if readme_path.exists() else "# Odoo Enterprise Source\n"
+    updated = replace_or_insert_source_bundle_block(existing, identity)
+    if updated == existing:
+        return None
+
+    readme_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    sha = commit_path(
+        current_src,
+        Path("README.md"),
+        "[DOC] README: update source bundle identity",
+        "\n".join(
+            [
+                "Update the source bundle identity recorded for the private",
+                "Odoo Enterprise source mirror.",
+                "",
+                f"Odoo file: {identity['odoo_file']}",
+                f"Date: {identity['date']}",
+                f"Size: {identity['size']} bytes",
+                f"SHA-256: {identity['sha256']}",
+            ]
+        ),
+    )
+    return {
+        "path": "README.md",
+        "commit": sha,
+        "odoo_file": identity["odoo_file"],
+    }
 
 
 def ensure_inside(root: Path, path: Path) -> None:
@@ -871,29 +997,6 @@ def commit_body_for(report: dict[str, Any], detail: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "generated_at": report["generated_at"],
-        "mode": report["mode"],
-        "source_bundle_sha256": report["source_bundle_sha256"],
-        "source_bundle_size": report["source_bundle_size"],
-        "source_bundle_type": report["source_bundle_type"],
-        "community_dest": report["community_dest"],
-        "community_lock_revision": report["community_lock_revision"],
-        "community_worktree_head": report["community_worktree_head"],
-        "community_source_used_as_import_reference": report["community_source_used_as_import_reference"],
-        "counts": report["counts"],
-        "missing_community_modules": report["missing_community_modules"],
-        "enterprise_drift_modules": report["enterprise_drift_modules"],
-        "drifted_community_modules": report["drifted_community_modules"],
-        "enterprise_drift_details": report["enterprise_drift_details"],
-        "enterprise_modules": report["enterprise_modules"],
-        "enterprise_details": report["enterprise_details"],
-        "import_plan": report["import_plan"],
-        "apply_result": report.get("apply_result"),
-    }
-
-
 def commit_path(current_src: Path, relative_path: Path, message: str, body: str) -> str:
     run_git(current_src, "add", "-A", "--", relative_path.as_posix())
     run_git(current_src, "commit", "-q", "-m", message, "-m", body)
@@ -950,34 +1053,14 @@ def apply_import_plan(
             )
             current_modules = collect_modules(current_src)
 
-    metadata_dir = current_src / args.metadata_dir
-    ensure_inside(current_src, metadata_dir)
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    metadata_path = metadata_dir / f"{timestamp}-enterprise-import.json"
     report["apply_result"] = {
         "commits": applied,
-        "metadata_path": metadata_path.relative_to(current_src).as_posix(),
     }
-    metadata_path.write_text(
-        json.dumps(committed_metadata(report), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    metadata_commit = commit_path(
-        current_src,
-        metadata_path.relative_to(current_src),
-        "[IMP] update Enterprise import metadata",
-        "\n".join(
-            [
-                "Record Odoo Enterprise import metadata.",
-                "",
-                f"Generated at: {report['generated_at']}",
-                f"Source bundle sha256: {report['source_bundle_sha256'] or 'not available'}",
-                f"Community commit: {report['community_lock_revision']}",
-            ]
-        ),
-    )
-    report["apply_result"]["metadata_commit"] = metadata_commit
+    if report.get("source_bundle_identity"):
+        report["apply_result"]["readme_commit"] = update_source_bundle_readme(
+            current_src,
+            report["source_bundle_identity"],
+        )
     ensure_clean_git_worktree(current_src)
     return report["apply_result"]
 
@@ -1039,11 +1122,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow --apply to remove current Enterprise modules absent from the new import plan",
     )
-    parser.add_argument(
-        "--metadata-dir",
-        default=".enterprise-imports",
-        help="Directory inside --current-src for committed import metadata (default: .enterprise-imports)",
-    )
     return parser.parse_args()
 
 
@@ -1063,6 +1141,7 @@ def main() -> int:
     source_bundle_sha256 = None
     source_bundle_size = None
     source_bundle_type = None
+    source_bundle_identity_data = None
 
     if args.current_src:
         current_src = source_root(args.current_src.resolve())
@@ -1080,6 +1159,13 @@ def main() -> int:
             source_bundle_sha256 = sha256_file(source_bundle_path)
             source_bundle_size = source_bundle_path.stat().st_size
             download_src = extract_source_bundle(source_bundle_path, Path(tmp_name))
+            source_bundle_identity_data = source_bundle_identity(
+                source_bundle_path=source_bundle_path,
+                source_bundle_type=source_bundle_type,
+                source_bundle_size=source_bundle_size,
+                source_bundle_sha256=source_bundle_sha256,
+                download_src=download_src,
+            )
         else:
             download_src = source_root(args.download_src.resolve())
 
@@ -1160,6 +1246,7 @@ def main() -> int:
             "source_bundle_sha256": source_bundle_sha256,
             "source_bundle_size": source_bundle_size,
             "source_bundle_type": source_bundle_type,
+            "source_bundle_identity": source_bundle_identity_data,
             "download_source": "<download-src>",
             "current_source": "<current-src>" if current_src else None,
             "community_source": "<community-src>",

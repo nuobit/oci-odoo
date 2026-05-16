@@ -98,12 +98,18 @@ and never see the subscription code. They consume only Git sources pinned in
 Enterprise import commits should follow Odoo addon repository discipline:
 
 ```text
-one commit per added/changed/removed Enterprise module
-one final root commit with import metadata/report
+one commit per Enterprise module change, always
 ```
 
 This keeps Enterprise source private while preserving the same reproducibility,
 reviewability, and lock-file model as Community/OCA/customer addons.
+Detailed import reports are execution/audit artifacts and should be stored
+outside the Enterprise source mirror.
+
+The private Enterprise mirror README should keep a small generated source
+bundle identity block with the Odoo file name, date, byte-size, and SHA-256.
+`odoo-enterprise-import --apply` updates that block automatically when importing
+from `--source-bundle`, so operators do not need to copy hashes manually.
 
 Enterprise import trusts the refreshed Community lock as the source of truth:
 before importing Enterprise, refresh Odoo Community, then treat every downloaded

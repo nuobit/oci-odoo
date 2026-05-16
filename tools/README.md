@@ -126,14 +126,19 @@ tools/odoo-enterprise-import \
 The report records three separate identities:
 
 - `source_bundle_sha256`: the downloaded Enterprise source bundle identity;
+- `source_bundle_identity`: the Odoo file name/date/size/SHA-256 that is safe
+  to publish inside the private mirror README;
 - `community_lock_revision`: the Community commit from `repos.lock.yaml`;
 - `community_worktree_head`: the local Community checkout used for comparison.
 
-Reports are intended to be safe for private Git metadata commits. They must not
-store operator-local absolute paths such as laptop home directories, temporary
-directories, or case workdirs. Source arguments such as `--source-bundle`,
-`--download-src`, `--community-src`, and `--current-src` are represented by
-stable hashes, commits, placeholders, and module-relative paths instead.
+Reports are execution artifacts, not source files for the Enterprise mirror.
+Write them with `--report-json` to an operator workdir, task evidence folder, or
+other private audit location outside the Enterprise source repository. They must
+not store operator-local absolute paths such as laptop home directories,
+temporary directories, or case workdirs. Source arguments such as
+`--source-bundle`, `--download-src`, `--community-src`, and `--current-src` are
+represented by stable hashes, commits, placeholders, and module-relative paths
+instead.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
 the pinned official Community source, or when the local Community checkout is
@@ -188,10 +193,28 @@ tools/odoo-enterprise-import \
 
 Apply mode creates:
 
-- one commit per added Enterprise module;
-- one commit per updated Enterprise module;
-- one commit per removed Enterprise module;
-- one final metadata commit under `.enterprise-imports/`.
+- one commit per Enterprise module change, always.
+- one README documentation commit when the source bundle identity block changes.
+
+The per-module rule applies to additions, updates, removals, and any future
+module-level import action. The Enterprise mirror tree is kept as source only:
+no import-report directory is committed inside it.
+
+When `--source-bundle` is used, apply mode also updates the Enterprise mirror
+README block delimited by:
+
+```md
+<!-- odoo-enterprise-source:start -->
+...
+<!-- odoo-enterprise-source:end -->
+```
+
+That block records only the Odoo source bundle file name, date, byte-size, and
+SHA-256. It must not contain local paths, normalized operator filenames, command
+lines, subscription codes, or import reports. This keeps human traceability in
+the mirror without making operators copy hashes by hand. When `--download-src`
+is used, the importer cannot know the original source bundle identity and does
+not update that README block.
 
 Removals require the explicit `--apply-removals` flag. This prevents accidental
 deletion when a stale or incomplete Enterprise download is reviewed too quickly.
