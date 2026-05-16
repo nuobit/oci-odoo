@@ -2,15 +2,15 @@
 # SPDX-FileCopyrightText: 2026 NuoBiT Solutions, S.L.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Inspect or import an Odoo Enterprise source archive into Git.
+"""Inspect or import an Odoo Enterprise source bundle into Git.
 
-The command is dry-run by default. It validates the source archive against the
+The command is dry-run by default. It validates the source bundle against the
 exact Community source selected by repos.lock.yaml and reports the modules that
 are not present in that Community source. With --apply, it writes those
 Enterprise modules into a local private Enterprise Git worktree.
 
 The import phase is deliberately separate from image builds:
-- this tool handles archive acquisition/classification/import preparation;
+- this tool handles source bundle acquisition/classification/import preparation;
 - Dockerfile.source-build consumes only Git repositories pinned in
   repos.lock.yaml.
 """
@@ -296,7 +296,7 @@ def is_proprietary_license(license_value: str | None) -> bool:
 
 
 def source_root(path: Path) -> Path:
-    """Return the likely source root from an extracted archive directory."""
+    """Return the likely source root from an extracted source bundle directory."""
     candidates = [path]
     children = [child for child in path.iterdir() if child.is_dir()] if path.is_dir() else []
     if len(children) == 1:
@@ -383,7 +383,7 @@ def build_drift_file_details(download_module: ModuleInfo, community_module: Modu
         if download_file and community_file:
             status = "modified"
         elif download_file:
-            status = "archive_only"
+            status = "source_bundle_only"
         else:
             status = "community_only"
         mtime = int(download_file.stat().st_mtime) if download_file else None
@@ -391,10 +391,10 @@ def build_drift_file_details(download_module: ModuleInfo, community_module: Modu
             {
                 "path": rel_path,
                 "status": status,
-                "archive_sha256": download_digest,
+                "source_bundle_sha256": download_digest,
                 "community_sha256": community_digest,
-                "archive_mtime": isoformat_utc(mtime),
-                "archive_mtime_timestamp": mtime,
+                "source_bundle_mtime": isoformat_utc(mtime),
+                "source_bundle_mtime_timestamp": mtime,
             }
         )
     return drift_files
@@ -404,7 +404,7 @@ def module_git_path(community_src: Path, community_module: ModuleInfo, module_re
     return (community_module.path.relative_to(community_src) / module_relative_path).as_posix()
 
 
-def archive_matches_git_revision(
+def source_bundle_matches_git_revision(
     *,
     community_src: Path,
     community_module: ModuleInfo,
@@ -414,7 +414,7 @@ def archive_matches_git_revision(
     for drift_file in drift_files:
         rel_path = module_git_path(community_src, community_module, drift_file["path"])
         git_digest = git_blob_sha256(community_src, revision, rel_path)
-        if drift_file["archive_sha256"] != git_digest:
+        if drift_file["source_bundle_sha256"] != git_digest:
             return False
     return True
 
@@ -436,22 +436,22 @@ def build_drift_details(
         download_module = download_modules[name]
         community_module = community_modules[name]
         drift_files = build_drift_file_details(download_module, community_module)
-        archive_timestamps = [
-            item["archive_mtime_timestamp"]
+        source_bundle_timestamps = [
+            item["source_bundle_mtime_timestamp"]
             for item in drift_files
-            if item["archive_mtime_timestamp"] is not None
+            if item["source_bundle_mtime_timestamp"] is not None
         ]
-        archive_latest_timestamp = max(archive_timestamps) if archive_timestamps else None
-        archive_latest_mtime = isoformat_utc(archive_latest_timestamp)
+        source_bundle_latest_timestamp = max(source_bundle_timestamps) if source_bundle_timestamps else None
+        source_bundle_latest_mtime = isoformat_utc(source_bundle_latest_timestamp)
         module_detail: dict[str, Any] = {
             "diagnosis": "limited_context",
             "diagnosis_reason": "Community source has no Git history available for local commit analysis.",
-            "archive_latest_mtime": archive_latest_mtime,
-            "archive_latest_mtime_timestamp": archive_latest_timestamp,
+            "source_bundle_latest_mtime": source_bundle_latest_mtime,
+            "source_bundle_latest_mtime_timestamp": source_bundle_latest_timestamp,
             "community_current": current_info,
             "drifted_files": drift_files,
-            "commits_after_archive_timestamp": [],
-            "commits_after_archive_timestamp_truncated": False,
+            "commits_after_source_bundle_timestamp": [],
+            "commits_after_source_bundle_timestamp_truncated": False,
             "matching_ancestor_commit": None,
             "matching_parent_of_commit": None,
         }
@@ -459,8 +459,8 @@ def build_drift_details(
         if not has_git_context:
             details[name] = module_detail
             continue
-        if archive_latest_timestamp is None:
-            module_detail["diagnosis_reason"] = "No archive file timestamp was available for drift diagnosis."
+        if source_bundle_latest_timestamp is None:
+            module_detail["diagnosis_reason"] = "No source bundle file timestamp was available for drift diagnosis."
             details[name] = module_detail
             continue
 
@@ -471,22 +471,22 @@ def build_drift_details(
         commits_after, truncated = git_log_for_paths_after(
             community_src,
             rel_paths,
-            after_timestamp=archive_latest_timestamp,
+            after_timestamp=source_bundle_latest_timestamp,
         )
-        module_detail["commits_after_archive_timestamp"] = commits_after
-        module_detail["commits_after_archive_timestamp_truncated"] = truncated
+        module_detail["commits_after_source_bundle_timestamp"] = commits_after
+        module_detail["commits_after_source_bundle_timestamp_truncated"] = truncated
 
         for commit in commits_after:
             for parent in git_commit_parents(community_src, commit["sha"]):
-                if archive_matches_git_revision(
+                if source_bundle_matches_git_revision(
                     community_src=community_src,
                     community_module=community_module,
                     drift_files=drift_files,
                     revision=parent,
                 ):
-                    module_detail["diagnosis"] = "archive_lag_confirmed"
+                    module_detail["diagnosis"] = "source_bundle_lag_confirmed"
                     module_detail["diagnosis_reason"] = (
-                        "The archive copy matches the Community state immediately before "
+                        "The source bundle copy matches the Community state immediately before "
                         "a newer Community commit touching the drifted file(s)."
                     )
                     module_detail["matching_ancestor_commit"] = git_commit_info(community_src, parent) or {
@@ -495,14 +495,14 @@ def build_drift_details(
                     }
                     module_detail["matching_parent_of_commit"] = commit
                     break
-            if module_detail["diagnosis"] == "archive_lag_confirmed":
+            if module_detail["diagnosis"] == "source_bundle_lag_confirmed":
                 break
 
-        if module_detail["diagnosis"] != "archive_lag_confirmed":
+        if module_detail["diagnosis"] != "source_bundle_lag_confirmed":
             module_detail["diagnosis"] = "unexplained_drift"
             module_detail["diagnosis_reason"] = (
-                "The archive copy did not match a parent of the Community commits "
-                "found after the archive timestamp."
+                "The source bundle copy did not match a parent of the Community commits "
+                "found after the source bundle timestamp."
             )
         details[name] = module_detail
     return details
@@ -514,44 +514,44 @@ def safe_relative_to(destination: Path, member_name: str) -> None:
     try:
         member_path.resolve().relative_to(destination_resolved)
     except ValueError as exc:
-        raise SystemExit(f"Unsafe archive member path: {member_name!r}") from exc
+        raise SystemExit(f"Unsafe source bundle member path: {member_name!r}") from exc
 
 
-def extract_archive(archive_path: Path, destination: Path) -> Path:
-    if zipfile.is_zipfile(archive_path):
-        with zipfile.ZipFile(archive_path) as archive:
-            for member in archive.infolist():
+def extract_source_bundle(source_bundle_path: Path, destination: Path) -> Path:
+    if zipfile.is_zipfile(source_bundle_path):
+        with zipfile.ZipFile(source_bundle_path) as bundle:
+            for member in bundle.infolist():
                 safe_relative_to(destination, member.filename)
-            archive.extractall(destination)
+            bundle.extractall(destination)
         return source_root(destination)
 
-    if tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path) as archive:
-            for member in archive.getmembers():
+    if tarfile.is_tarfile(source_bundle_path):
+        with tarfile.open(source_bundle_path) as bundle:
+            for member in bundle.getmembers():
                 if member.issym() or member.islnk():
-                    raise SystemExit(f"Refusing archive link member: {member.name!r}")
+                    raise SystemExit(f"Refusing source bundle link member: {member.name!r}")
                 safe_relative_to(destination, member.name)
-            extract_tar_members(archive, destination)
+            extract_tar_members(bundle, destination)
         return source_root(destination)
 
-    raise SystemExit(f"Unsupported Enterprise archive format: {archive_path}")
+    raise SystemExit(f"Unsupported Enterprise source bundle format: {source_bundle_path}")
 
 
-def archive_kind(archive_path: Path) -> str | None:
-    if zipfile.is_zipfile(archive_path):
+def source_bundle_kind(source_bundle_path: Path) -> str | None:
+    if zipfile.is_zipfile(source_bundle_path):
         return "zip"
-    if tarfile.is_tarfile(archive_path):
+    if tarfile.is_tarfile(source_bundle_path):
         return "tar"
     return None
 
 
-def extract_tar_members(archive: tarfile.TarFile, destination: Path) -> None:
+def extract_tar_members(bundle: tarfile.TarFile, destination: Path) -> None:
     try:
-        archive.extractall(destination, filter="data")
+        bundle.extractall(destination, filter="data")
     except TypeError as exc:
         if "filter" not in str(exc):
             raise
-        archive.extractall(destination)
+        bundle.extractall(destination)
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:
@@ -648,7 +648,7 @@ def build_import_plan(
         }
 
     return {
-        "current_source": str(current_root_path) if current_root_path else None,
+        "current_source": "<current-src>" if current_root_path else None,
         "summary": {
             "add": len(add),
             "update": len(update),
@@ -678,7 +678,7 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
         )
     if counts["enterprise_drift_modules"]:
         warnings.append(
-            f"{counts['enterprise_drift_modules']} Enterprise archive embedded-Community module(s) drift byte-for-byte"
+            f"{counts['enterprise_drift_modules']} Enterprise source bundle embedded-Community module(s) drift byte-for-byte"
         )
     if plan["remove"]:
         warnings.append(f"{plan['remove']} current module(s) are planned as removal")
@@ -768,27 +768,27 @@ def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
                 f"Affected module: {module_name}",
                 f"  diagnosis: {detail['diagnosis']}",
                 f"  reason: {detail['diagnosis_reason']}",
-                "  archive embedded Community copy:",
-                f"    latest drifted file timestamp: {detail['archive_latest_mtime'] or 'not available'}",
+                "  source bundle embedded Community copy:",
+                f"    latest drifted file timestamp: {detail['source_bundle_latest_mtime'] or 'not available'}",
                 "  pinned official Community:",
                 f"    current commit: {format_commit_for_error(detail.get('community_current'))}",
             ]
         )
 
-        commits_after = detail.get("commits_after_archive_timestamp") or []
+        commits_after = detail.get("commits_after_source_bundle_timestamp") or []
         if commits_after:
-            lines.append("  Community commits after archive timestamp touching drifted files:")
+            lines.append("  Community commits after source bundle timestamp touching drifted files:")
             for commit in commits_after:
                 lines.append(f"    - {format_commit_for_error(commit)}")
-            if detail.get("commits_after_archive_timestamp_truncated"):
+            if detail.get("commits_after_source_bundle_timestamp_truncated"):
                 lines.append("    - ... additional commits omitted by the diagnostic safety limit")
         else:
-            lines.append("  Community commits after archive timestamp touching drifted files: none found")
+            lines.append("  Community commits after source bundle timestamp touching drifted files: none found")
 
         if detail.get("matching_ancestor_commit") and detail.get("matching_parent_of_commit"):
             lines.extend(
                 [
-                    "  archive copy matches:",
+                    "  source bundle copy matches:",
                     (
                         "    parent of "
                         f"{detail['matching_parent_of_commit']['short_sha']}: "
@@ -801,11 +801,11 @@ def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
         for drift_file in detail["drifted_files"]:
             lines.append(f"    - {drift_file['path']} ({drift_file['status']})")
 
-        if detail["diagnosis"] == "archive_lag_confirmed":
+        if detail["diagnosis"] == "source_bundle_lag_confirmed":
             lines.extend(
                 [
                     "  conclusion:",
-                    "    This looks like the Enterprise archive was generated before a newer",
+                    "    This looks like the Enterprise source bundle was generated before a newer",
                     "    Community fix was merged. Community remains authoritative. The",
                     "    drifted module will not be imported into the Enterprise mirror.",
                 ]
@@ -834,9 +834,9 @@ def format_drift_error(report: dict[str, Any]) -> str:
     affected = format_modules_for_error(sorted(report["enterprise_drift_modules"]))
     return "\n".join(
         [
-            "ERROR: Enterprise archive drift detected.",
+            "ERROR: Enterprise source bundle drift detected.",
             "",
-            "The archive embeds Community module copies that differ from the freshly",
+            "The source bundle embeds Community module copies that differ from the freshly",
             "pinned official Odoo Community source.",
             "",
             f"Affected modules: {affected}",
@@ -862,7 +862,7 @@ def commit_body_for(report: dict[str, Any], detail: dict[str, Any]) -> str:
         "Odoo Enterprise import.",
         "",
         f"Generated at: {report['generated_at']}",
-        f"Archive sha256: {report['archive_sha256'] or 'not available'}",
+        f"Source bundle sha256: {report['source_bundle_sha256'] or 'not available'}",
         f"Community commit: {report['community_lock_revision']}",
         f"Download digest: {detail['download_digest'] or 'not available'}",
         f"Previous digest: {detail['current_digest'] or 'not available'}",
@@ -875,11 +875,9 @@ def committed_metadata(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "generated_at": report["generated_at"],
         "mode": report["mode"],
-        "archive_sha256": report["archive_sha256"],
-        "archive_size": report["archive_size"],
-        "archive_type": report["archive_type"],
-        "zip_sha256": report["zip_sha256"],
-        "zip_size": report["zip_size"],
+        "source_bundle_sha256": report["source_bundle_sha256"],
+        "source_bundle_size": report["source_bundle_size"],
+        "source_bundle_type": report["source_bundle_type"],
         "community_dest": report["community_dest"],
         "community_lock_revision": report["community_lock_revision"],
         "community_worktree_head": report["community_worktree_head"],
@@ -974,7 +972,7 @@ def apply_import_plan(
                 "Record Odoo Enterprise import metadata.",
                 "",
                 f"Generated at: {report['generated_at']}",
-                f"Archive sha256: {report['archive_sha256'] or 'not available'}",
+                f"Source bundle sha256: {report['source_bundle_sha256'] or 'not available'}",
                 f"Community commit: {report['community_lock_revision']}",
             ]
         ),
@@ -986,16 +984,10 @@ def apply_import_plan(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Inspect or apply an Odoo Enterprise archive/folder import against pinned official Community source.",
+        description="Inspect or apply an Odoo Enterprise source bundle/folder import against pinned official Community source.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--archive", dest="archive_path", type=Path, help="Enterprise source archive")
-    source.add_argument(
-        "--zip",
-        dest="archive_path",
-        type=Path,
-        help="Deprecated alias for --archive",
-    )
+    source.add_argument("--source-bundle", dest="source_bundle_path", type=Path, help="Enterprise source bundle")
     source.add_argument(
         "--download-src",
         type=Path,
@@ -1033,7 +1025,7 @@ def parse_args() -> argparse.Namespace:
         "--allow-drift",
         action="store_true",
         help=(
-            "Allow import to continue when the Enterprise archive embeds Community module copies "
+            "Allow import to continue when the Enterprise source bundle embeds Community module copies "
             "that differ from the freshly pinned official Odoo Community source"
         ),
     )
@@ -1068,9 +1060,9 @@ def main() -> int:
     community_revision = locked_community_revision(lock_path, args.community_dest)
     community_head = git_head(community_src)
     current_src = None
-    archive_sha256 = None
-    archive_size = None
-    archive_type = None
+    source_bundle_sha256 = None
+    source_bundle_size = None
+    source_bundle_type = None
 
     if args.current_src:
         current_src = source_root(args.current_src.resolve())
@@ -1078,16 +1070,16 @@ def main() -> int:
             raise SystemExit(f"current source not found: {current_src}")
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
-        if args.archive_path:
-            archive_path = args.archive_path.resolve()
-            if not archive_path.is_file():
-                raise SystemExit(f"archive not found: {archive_path}")
-            archive_type = archive_kind(archive_path)
-            if not archive_type:
-                raise SystemExit(f"unsupported Enterprise archive format: {archive_path}")
-            archive_sha256 = sha256_file(archive_path)
-            archive_size = archive_path.stat().st_size
-            download_src = extract_archive(archive_path, Path(tmp_name))
+        if args.source_bundle_path:
+            source_bundle_path = args.source_bundle_path.resolve()
+            if not source_bundle_path.is_file():
+                raise SystemExit(f"source bundle not found: {source_bundle_path}")
+            source_bundle_type = source_bundle_kind(source_bundle_path)
+            if not source_bundle_type:
+                raise SystemExit(f"unsupported Enterprise source bundle format: {source_bundle_path}")
+            source_bundle_sha256 = sha256_file(source_bundle_path)
+            source_bundle_size = source_bundle_path.stat().st_size
+            download_src = extract_source_bundle(source_bundle_path, Path(tmp_name))
         else:
             download_src = source_root(args.download_src.resolve())
 
@@ -1141,7 +1133,7 @@ def main() -> int:
         if missing_community:
             recommendations.extend(
                 [
-                    "Ensure the Enterprise archive was freshly downloaded.",
+                    "Ensure the Enterprise source bundle was freshly downloaded.",
                     "Run lock-repos --refresh ./odoo if the local Community lock may be stale, then retry.",
                     "Ensure --community-src was materialized from the same repos.lock.yaml being checked.",
                 ]
@@ -1150,7 +1142,7 @@ def main() -> int:
             recommendations.extend(
                 [
                     "Refresh Odoo Community from the official Odoo GitHub repository and retry.",
-                    "If Enterprise archive drift remains after refresh, review the listed modules and rerun with --allow-drift.",
+                    "If Enterprise source bundle drift remains after refresh, review the listed modules and rerun with --allow-drift.",
                 ]
             )
         if enterprise_modules:
@@ -1165,14 +1157,12 @@ def main() -> int:
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "mode": "apply" if args.apply else "dry-run",
-            "archive_sha256": archive_sha256,
-            "archive_size": archive_size,
-            "archive_type": archive_type,
-            "zip_sha256": archive_sha256,
-            "zip_size": archive_size,
-            "download_source": str(download_src),
-            "current_source": str(current_src) if current_src else None,
-            "community_source": str(community_src),
+            "source_bundle_sha256": source_bundle_sha256,
+            "source_bundle_size": source_bundle_size,
+            "source_bundle_type": source_bundle_type,
+            "download_source": "<download-src>",
+            "current_source": "<current-src>" if current_src else None,
+            "community_source": "<community-src>",
             "community_dest": args.community_dest,
             "community_lock_revision": community_revision,
             "community_worktree_head": community_head,
@@ -1202,7 +1192,7 @@ def main() -> int:
             if missing_community:
                 print(
                     "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
-                    "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
+                    "Refresh the Enterprise source bundle and/or run lock-repos --refresh ./odoo, then retry.",
                     file=sys.stderr,
                 )
                 return 2
@@ -1234,7 +1224,7 @@ def main() -> int:
         if missing_community:
             print(
                 "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
-                "Refresh the Enterprise archive and/or run lock-repos --refresh ./odoo, then retry.",
+                "Refresh the Enterprise source bundle and/or run lock-repos --refresh ./odoo, then retry.",
                 file=sys.stderr,
             )
             return 2
@@ -1243,7 +1233,7 @@ def main() -> int:
             return 3
         if enterprise_drift:
             print(
-                "WARNING: Enterprise archive drift accepted with --allow-drift.",
+                "WARNING: Enterprise source bundle drift accepted with --allow-drift.",
                 file=sys.stderr,
             )
         if community_head and community_head != community_revision:

@@ -40,7 +40,7 @@ If a merge is being added for the first time, plain `lock-repos` is enough.
 
 ### `odoo-enterprise-download`
 
-Downloads an Odoo Enterprise source archive from Odoo's official download
+Downloads an Odoo Enterprise source bundle from Odoo's official download
 portal.
 
 This is an acquisition tool only. It does not classify modules, does not import
@@ -48,7 +48,7 @@ Enterprise source into Git, and must never run inside Docker builds. The normal
 flow is:
 
 ```text
-odoo-enterprise-download -> archive + sha256
+odoo-enterprise-download -> source bundle + sha256
 odoo-enterprise-import   -> private Enterprise Git mirror/cache
 repos.yaml/repos.lock    -> normal image build
 ```
@@ -75,8 +75,8 @@ The subscription code can be supplied in four ways:
 
 The command prints and records:
 
-- downloaded archive path;
-- archive type;
+- downloaded source bundle path;
+- source bundle type;
 - byte size;
 - `sha256`;
 - Odoo subscription-check result.
@@ -85,12 +85,12 @@ It does not write or print the subscription code. `--debug-http` redacts query
 values from URLs before printing HTTP diagnostics.
 
 Do not assume the source download is a ZIP. For `src_17e`, Odoo returned a
-gzip-compressed TAR archive in May 2026. The downloader validates the payload as
-a supported source archive and records the detected type.
+gzip-compressed TAR source bundle in May 2026. The downloader validates the payload as
+a supported source bundle and records the detected type.
 
 ### `odoo-enterprise-import`
 
-Inspects or imports an Odoo Enterprise source archive or already extracted
+Inspects or imports an Odoo Enterprise source bundle or already extracted
 source directory against the exact Community checkout selected by
 `repos.lock.yaml`.
 
@@ -105,7 +105,7 @@ Example:
 
 ```bash
 tools/odoo-enterprise-import \
-  --archive /path/to/odoo-enterprise-17.tar.gz \
+  --source-bundle /path/to/odoo-enterprise-17.tar.gz \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
@@ -113,7 +113,7 @@ tools/odoo-enterprise-import \
 ```
 
 If the Odoo Enterprise download has already been extracted, use
-`--download-src` instead of `--archive`:
+`--download-src` instead of `--source-bundle`:
 
 ```bash
 tools/odoo-enterprise-import \
@@ -125,18 +125,21 @@ tools/odoo-enterprise-import \
 
 The report records three separate identities:
 
-- `archive_sha256`: the downloaded Enterprise archive identity;
+- `source_bundle_sha256`: the downloaded Enterprise source bundle identity;
 - `community_lock_revision`: the Community commit from `repos.lock.yaml`;
 - `community_worktree_head`: the local Community checkout used for comparison.
 
-`zip_sha256` and `zip_size` may appear as legacy compatibility aliases in
-reports. New callers should use the `archive_*` fields.
+Reports are intended to be safe for private Git metadata commits. They must not
+store operator-local absolute paths such as laptop home directories, temporary
+directories, or case workdirs. Source arguments such as `--source-bundle`,
+`--download-src`, `--community-src`, and `--current-src` are represented by
+stable hashes, commits, placeholders, and module-relative paths instead.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
 the pinned official Community source, or when the local Community checkout is
-not at the pinned revision. Matching module names whose Enterprise archive copy
+not at the pinned revision. Matching module names whose Enterprise source bundle copy
 differs byte-for-byte from the pinned official Community source are reported as
-Enterprise archive drift.
+Enterprise source bundle drift.
 
 The normal safe Enterprise import workflow is to refresh the Community lock
 first:
@@ -152,7 +155,7 @@ as Enterprise. No manual module-classification file is used.
 
 The importer never asks interactive risk-confirmation questions. Risky states
 fail with a clear error and require an explicit flag on the next run. Enterprise
-archive drift aborts by default. If the operator has refreshed Community,
+source bundle drift aborts by default. If the operator has refreshed Community,
 reviewed the listed modules, and accepts the drift, rerun with `--allow-drift`.
 
 The tool still reads each Enterprise module manifest with `ast.literal_eval`
@@ -175,7 +178,7 @@ clean local checkout of the private Enterprise Git repo and pass `--apply`:
 
 ```bash
 tools/odoo-enterprise-import \
-  --archive /path/to/odoo-enterprise-17.tar.gz \
+  --source-bundle /path/to/odoo-enterprise-17.tar.gz \
   --community-src /path/to/materialized/src/odoo \
   --repos-lock repos.lock.yaml \
   --current-src /path/to/private/odoo-enterprise \
@@ -194,22 +197,22 @@ Removals require the explicit `--apply-removals` flag. This prevents accidental
 deletion when a stale or incomplete Enterprise download is reviewed too quickly.
 The command refuses to apply if `--current-src` is not a clean Git worktree.
 
-Enterprise archive drift requires the explicit `--allow-drift` flag. The
+Enterprise source bundle drift requires the explicit `--allow-drift` flag. The
 importer is an Enterprise tool, so the short flag name is enough; the error text
-spells out that the drift is the archive's embedded Community copy differing
+spells out that the drift is the source bundle's embedded Community copy differing
 from the freshly pinned official Odoo Community source.
 
 When drift appears, the first response is to refresh Community and rerun. If
 drift remains, review the affected module as embedded-Community drift, not as a
 candidate Enterprise module. A strong review pattern is:
 
-1. compare the archive module against the refreshed Community module;
+1. compare the source bundle module against the refreshed Community module;
 2. list the files that differ;
 3. inspect the latest official Community commit(s) touching those files;
-4. compare archive file hashes against the parent of the latest Community
+4. compare source bundle file hashes against the parent of the latest Community
    commit.
 
-The 2026-05-14 `l10n_jo_edi` drift validated this model. The Enterprise archive
+The 2026-05-14 `l10n_jo_edi` drift validated this model. The Enterprise source bundle
 files for `models/account_edi_xml_ubl_21_jo.py` and three XML test fixtures
 matched the parent of Community commit `1601de2198ed...`, while refreshed
 Community contained the newer fix. Therefore the module remained Community and
@@ -219,9 +222,9 @@ When Community source has Git history, drift errors include a per-module
 diagnosis block. The diagnostic is informational only; it never accepts drift
 automatically. Possible diagnosis values:
 
-- `archive_lag_confirmed`: the archive copy matches the Community state
+- `source_bundle_lag_confirmed`: the source bundle copy matches the Community state
   immediately before a newer Community commit touching the drifted file(s);
-- `unexplained_drift`: the archive copy does not match the checked recent
+- `unexplained_drift`: the source bundle copy does not match the checked recent
   Community ancestors;
 - `limited_context`: the Community source has no Git history available, so the
   tool can list files and timestamps but cannot inspect commits.
