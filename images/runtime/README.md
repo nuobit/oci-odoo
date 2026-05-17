@@ -157,9 +157,12 @@ odoo-neutralize <database> --stdout
 It calls Odoo's standard `neutralize` command through `odoo-run`, so it uses the
 same generated runtime config and Secret-file values as the normal container.
 The command executes `data/neutralize.sql` from installed modules. This is real
-Odoo neutralization, not only a banner, but it does not remove the need to
-review custom connectors or third-party side effects before exposing a copied
-database to users.
+Odoo neutralization, not only a banner. Odoo core disables scheduled actions
+except the base autovacuum cron, disables real outgoing mail by replacing it
+with a dummy SMTP host, sets the neutralization flag, and lets installed modules
+apply their own neutralization SQL. This does not remove the need to review
+custom connectors or third-party side effects before exposing a copied database
+to users.
 
 For Kubernetes, a one-off empty-DB smoke can run `odoo-init` inside an existing
 Pod or in a dedicated Job that mounts the same ConfigMap and Secret files as
