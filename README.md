@@ -635,6 +635,13 @@ appropriate. The generated `requirements.lock.txt` is still the exact install
 set, but broad ranges should only move when the Python lock refresh mode is
 explicitly enabled and the resulting diff is reviewed.
 
+For derived images that include OCA addons and must support module updates or
+post-restore `-u all`, enable the scaffolded `openupgradelib` line in
+`requirements.in`. Many OCA migration scripts import it during module updates;
+missing it can make a restored database fail during an otherwise valid update
+pass. Pin the direct requirement and refresh/review `requirements.lock.txt`
+deliberately.
+
 Linux system dependencies are split the same way:
 
 ```text
@@ -950,6 +957,8 @@ collapsed mentally into a single "build" step.
    Edit requirements.in only for extra Python packages actually needed by the
    selected addons. Do not bulk-copy OCA/provider requirements.txt files.
    Edit requirements-constraints.in only for compatibility bounds.
+   For OCA-based deployment images, uncomment the scaffolded `openupgradelib`
+   direct requirement before refreshing `requirements.lock.txt`.
 
 3. Release preparation / lock generation
    Run lock-repos to generate repos.lock.yaml.
