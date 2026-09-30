@@ -9,6 +9,9 @@ exact Community source selected by repos.lock.yaml and reports the modules that
 are not present in that Community source. With --apply, it writes those
 Enterprise modules into a local private Enterprise Git worktree and refreshes
 the mirror README source-bundle identity block when --source-bundle is used.
+With --extract-to, it copies them into a plain directory instead, one directory
+per module; in that mode repos.lock.yaml is optional, and without it the
+Community checkout is used as it is.
 
 The import phase is deliberately separate from image builds:
 - this tool handles source bundle acquisition/classification/import preparation;
@@ -22,6 +25,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -429,7 +433,7 @@ def build_drift_details(
     community_modules: dict[str, ModuleInfo],
     drift_names: list[str],
     community_src: Path,
-    community_revision: str,
+    community_revision: str | None,
     community_head: str | None,
 ) -> dict[str, Any]:
     details: dict[str, Any] = {}
@@ -809,7 +813,9 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
         )
     if plan["remove"]:
         warnings.append(f"{plan['remove']} current module(s) are planned as removal")
-    if report["community_worktree_head"] and report["community_worktree_head"] != report["community_lock_revision"]:
+    if report["community_lock_revision"] is None:
+        warnings.append("Community checkout HEAD not compared with a repos.lock.yaml revision: no --repos-lock given")
+    elif report["community_worktree_head"] and report["community_worktree_head"] != report["community_lock_revision"]:
         warnings.append("Community checkout HEAD differs from repos.lock.yaml revision")
 
     return {
@@ -833,11 +839,7 @@ def build_human_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 def print_human_summary(summary: dict[str, Any]) -> None:
     plan = summary["plan"]
-    title = (
-        "Enterprise import apply summary"
-        if summary["mode"] == "apply"
-        else "Enterprise import dry-run summary"
-    )
+    title = f"Enterprise import {summary['mode']} summary"
     print(title)
     print("-" * len(title))
     print(f"Community modules:            {summary['community_modules']}")
@@ -849,6 +851,9 @@ def print_human_summary(summary: dict[str, Any]) -> None:
             **plan
         )
     )
+    if summary["mode"] == "extract":
+        # Extract mode prints its summary only after copying every Enterprise module.
+        print(f"Extracted modules:            {summary['enterprise_modules']}")
     if summary["warnings"]:
         print("Warnings:")
         for warning in summary["warnings"]:
@@ -879,7 +884,26 @@ def format_commit_for_error(commit: dict[str, Any] | None) -> str:
     return f"{short_sha} {date}"
 
 
-def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
+def format_missing_community_error(report: dict[str, Any]) -> str:
+    if report["community_lock_revision"] is not None:
+        return (
+            "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
+            "Refresh the Enterprise source bundle and/or run lock-repos --refresh ./odoo, then retry."
+        )
+    missing = format_modules_for_error(report["missing_community_modules"])
+    return (
+        "ERROR: Enterprise download is not an exhaustive superset of the Community checkout. "
+        f"Community modules missing from the download: {missing}. "
+        "Refresh the Enterprise source bundle and/or update the Community checkout, then retry."
+    )
+
+
+def format_drift_details_for_error(
+    drift_details: dict[str, Any],
+    *,
+    community_label: str,
+    enterprise_outcome: str,
+) -> str:
     if not drift_details:
         return ""
 
@@ -897,7 +921,7 @@ def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
                 f"  reason: {detail['diagnosis_reason']}",
                 "  source bundle embedded Community copy:",
                 f"    latest drifted file timestamp: {detail['source_bundle_latest_mtime'] or 'not available'}",
-                "  pinned official Community:",
+                f"  {community_label}:",
                 f"    current commit: {format_commit_for_error(detail.get('community_current'))}",
             ]
         )
@@ -934,7 +958,7 @@ def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
                     "  conclusion:",
                     "    This looks like the Enterprise source bundle was generated before a newer",
                     "    Community fix was merged. Community remains authoritative. The",
-                    "    drifted module will not be imported into the Enterprise mirror.",
+                    f"    drifted module will not be {enterprise_outcome}.",
                 ]
             )
         elif detail["diagnosis"] == "limited_context":
@@ -959,15 +983,31 @@ def format_drift_details_for_error(drift_details: dict[str, Any]) -> str:
 
 def format_drift_error(report: dict[str, Any]) -> str:
     affected = format_modules_for_error(sorted(report["enterprise_drift_modules"]))
+    if report["community_lock_revision"] is not None:
+        community_lines = [
+            "The source bundle embeds Community module copies that differ from the freshly",
+            "pinned official Odoo Community source.",
+        ]
+        community_label = "pinned official Community"
+    else:
+        community_lines = [
+            "The source bundle embeds Community module copies that differ from the Odoo",
+            "Community checkout.",
+        ]
+        community_label = "Community checkout"
+    enterprise_outcome = "extracted" if report["mode"] == "extract" else "imported into the Enterprise mirror"
     return "\n".join(
         [
             "ERROR: Enterprise source bundle drift detected.",
             "",
-            "The source bundle embeds Community module copies that differ from the freshly",
-            "pinned official Odoo Community source.",
+            *community_lines,
             "",
             f"Affected modules: {affected}",
-            format_drift_details_for_error(report.get("enterprise_drift_details", {})),
+            format_drift_details_for_error(
+                report.get("enterprise_drift_details", {}),
+                community_label=community_label,
+                enterprise_outcome=enterprise_outcome,
+            ),
             "",
             "Rerun with --allow-drift if you accept this reviewed drift.",
         ]
@@ -1066,9 +1106,74 @@ def apply_import_plan(
     return report["apply_result"]
 
 
+def ensure_extract_destination(extract_to: Path) -> None:
+    parent = extract_to.parent
+    if not parent.is_dir():
+        raise SystemExit(f"Refusing to extract: the parent of --extract-to is not an existing directory: {parent}")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise SystemExit(f"Refusing to extract: the parent of --extract-to is not writable: {parent}")
+    if extract_to.is_dir():
+        try:
+            not_empty = any(extract_to.iterdir())
+        except OSError as exc:
+            raise SystemExit(f"Refusing to extract: --extract-to cannot be listed: {exc}") from exc
+        if not_empty:
+            raise SystemExit(f"Refusing to extract: --extract-to is not empty: {extract_to}")
+    elif extract_to.exists():
+        raise SystemExit(f"Refusing to extract: --extract-to is not a directory: {extract_to}")
+
+
+def describe_os_error(exc: OSError) -> str:
+    if isinstance(exc, shutil.Error):
+        # copytree raises shutil.Error only with at least one (source, target, reason) entry.
+        reasons = [reason for _source, _target, reason in exc.args[0]]
+        more = f" (and {len(reasons) - 1} more)" if len(reasons) > 1 else ""
+        return f"{reasons[0]}{more}"
+    return str(exc)
+
+
+def extract_enterprise_modules(
+    *,
+    download_modules: dict[str, ModuleInfo],
+    enterprise_names: list[str],
+    extract_to: Path,
+) -> dict[str, Any]:
+    if not enterprise_names:
+        raise SystemExit("Nothing to extract: the download holds no module outside the Community source.")
+    staging = extract_to.with_name(f".{extract_to.name}.partial-{os.getpid()}")
+    try:
+        staging.mkdir()
+        try:
+            for name in enterprise_names:
+                shutil.copytree(download_modules[name].path, staging / name)
+            # One rename replaces the missing or empty target, and fails if it was filled meanwhile.
+            os.replace(staging, extract_to)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    except OSError as exc:
+        raise SystemExit(f"Extraction into {extract_to} failed; nothing was extracted: {describe_os_error(exc)}") from exc
+    return {
+        "destination": "<extract-to>",
+        "modules": enterprise_names,
+    }
+
+
+def extract_to_given() -> bool:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--extract-to", nargs="?")
+    known, _unknown = parser.parse_known_args()
+    return known.extract_to is not None
+
+
 def parse_args() -> argparse.Namespace:
+    # Known before the real parse, so that without --extract-to argparse itself still
+    # requires --repos-lock, with its own usage line and error text.
+    extract_mode = extract_to_given()
     parser = argparse.ArgumentParser(
-        description="Inspect or apply an Odoo Enterprise source bundle/folder import against pinned official Community source.",
+        description=(
+            "Classify an Odoo Enterprise source bundle/folder against official Community source, then inspect or "
+            "apply its import into a private Git mirror, or extract its Enterprise modules into a directory."
+        ),
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--source-bundle", dest="source_bundle_path", type=Path, help="Enterprise source bundle")
@@ -1081,13 +1186,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repos-lock",
         type=Path,
-        required=True,
-        help="repos.lock.yaml that contains the Community commit used by this deployment",
+        required=not extract_mode,
+        help="repos.lock.yaml that contains the Community commit used by this deployment; optional with --extract-to",
     )
     parser.add_argument(
         "--community-dest",
         default="./odoo",
-        help="Destination key in repos.lock.yaml for Odoo Community (default: ./odoo)",
+        help="Destination key in repos.lock.yaml for Odoo Community (default: ./odoo); used only with --repos-lock",
     )
     parser.add_argument("--report-json", type=Path, help="Write a machine-readable import report")
     parser.add_argument(
@@ -1103,14 +1208,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-community-head-mismatch",
         action="store_true",
-        help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml",
+        help="Report but do not fail when Community checkout HEAD differs from repos.lock.yaml; requires --repos-lock",
     )
     parser.add_argument(
         "--allow-drift",
         action="store_true",
         help=(
-            "Allow import to continue when the Enterprise source bundle embeds Community module copies "
-            "that differ from the freshly pinned official Odoo Community source"
+            "Allow the run to continue when the Enterprise source bundle embeds Community module copies "
+            "that differ from the Community source given with --community-src"
         ),
     )
     parser.add_argument(
@@ -1126,22 +1231,63 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow --apply to remove current Enterprise modules absent from the new import plan",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--extract-to",
+        type=Path,
+        help=(
+            "Copy the Enterprise modules, one directory per module, into this missing or empty directory "
+            "instead of a Git mirror; its parent must be an existing writable directory. Makes --repos-lock "
+            "optional; cannot be combined with --apply, --apply-removals or --current-src"
+        ),
+    )
+    args = parser.parse_args()
+    if args.extract_to is not None:
+        conflicts = [
+            option
+            for option, used in (
+                ("--apply", args.apply),
+                ("--apply-removals", args.apply_removals),
+                ("--current-src", args.current_src is not None),
+            )
+            if used
+        ]
+        if conflicts:
+            parser.error(f"--extract-to cannot be combined with {', '.join(conflicts)}")
+        if args.allow_community_head_mismatch and args.repos_lock is None:
+            parser.error("--allow-community-head-mismatch requires --repos-lock")
+    return args
+
+
+def run_mode(args: argparse.Namespace) -> str:
+    if args.apply:
+        mode = "apply"
+    elif args.extract_to is not None:
+        mode = "extract"
+    else:
+        mode = "dry-run"
+    return mode
 
 
 def main() -> int:
     args = parse_args()
-    lock_path = args.repos_lock.resolve()
+    mode = run_mode(args)
+    lock_path = args.repos_lock.resolve() if args.repos_lock is not None else None
     community_src = source_root(args.community_src.resolve())
 
-    if not lock_path.is_file():
+    if lock_path is not None and not lock_path.is_file():
         raise SystemExit(f"repos lock not found: {lock_path}")
     if not community_src.is_dir():
         raise SystemExit(f"community source not found: {community_src}")
 
-    community_revision = locked_community_revision(lock_path, args.community_dest)
+    community_revision = (
+        locked_community_revision(lock_path, args.community_dest) if lock_path is not None else None
+    )
     community_head = git_head(community_src)
+    community_head_mismatch = (
+        lock_path is not None and community_head is not None and community_head != community_revision
+    )
     current_src = None
+    extract_to = None
     source_bundle_sha256 = None
     source_bundle_size = None
     source_bundle_type = None
@@ -1151,6 +1297,9 @@ def main() -> int:
         current_src = source_root(args.current_src.resolve())
         if not current_src.is_dir():
             raise SystemExit(f"current source not found: {current_src}")
+    if mode == "extract":
+        extract_to = args.extract_to.resolve()
+        ensure_extract_destination(extract_to)
 
     with tempfile.TemporaryDirectory(prefix="odoo-enterprise-import-") as tmp_name:
         if args.source_bundle_path:
@@ -1238,6 +1387,8 @@ def main() -> int:
         if enterprise_modules:
             recommendations.append(
                 "All downloaded modules absent from refreshed Community are treated as Enterprise modules."
+                if lock_path is not None
+                else "All downloaded modules absent from the Community checkout are treated as Enterprise modules."
             )
         if import_plan["actions"]["remove"]:
             recommendations.append(
@@ -1246,7 +1397,7 @@ def main() -> int:
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "mode": "apply" if args.apply else "dry-run",
+            "mode": mode,
             "source_bundle_sha256": source_bundle_sha256,
             "source_bundle_size": source_bundle_size,
             "source_bundle_type": source_bundle_type,
@@ -1254,7 +1405,7 @@ def main() -> int:
             "download_source": "<download-src>",
             "current_source": "<current-src>" if current_src else None,
             "community_source": "<community-src>",
-            "community_dest": args.community_dest,
+            "community_dest": args.community_dest if lock_path is not None else None,
             "community_lock_revision": community_revision,
             "community_worktree_head": community_head,
             "community_source_used_as_import_reference": True,
@@ -1279,31 +1430,34 @@ def main() -> int:
         }
         report["human_summary"] = build_human_summary(report)
 
-        if args.apply:
+        if mode in ("apply", "extract"):
             if missing_community:
-                print(
-                    "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
-                    "Refresh the Enterprise source bundle and/or run lock-repos --refresh ./odoo, then retry.",
-                    file=sys.stderr,
-                )
+                print(format_missing_community_error(report), file=sys.stderr)
                 return 2
             if enterprise_drift and not args.allow_drift:
                 print(format_drift_error(report), file=sys.stderr)
                 return 3
-            if community_head and community_head != community_revision and not args.allow_community_head_mismatch:
+            if community_head_mismatch and not args.allow_community_head_mismatch:
                 print(
                     "ERROR: Community worktree HEAD differs from repos.lock.yaml revision. "
                     "Use --allow-community-head-mismatch only after review.",
                     file=sys.stderr,
                 )
                 return 4
-            apply_import_plan(
-                args=args,
-                report=report,
-                download_modules=download_modules,
-                current_modules=current_modules,
-                current_src=current_src,
-            )
+            if mode == "apply":
+                apply_import_plan(
+                    args=args,
+                    report=report,
+                    download_modules=download_modules,
+                    current_modules=current_modules,
+                    current_src=current_src,
+                )
+            else:
+                report["extract_result"] = extract_enterprise_modules(
+                    download_modules=download_modules,
+                    enterprise_names=enterprise_modules,
+                    extract_to=extract_to,
+                )
 
         if args.report_json:
             write_report(args.report_json, report)
@@ -1313,11 +1467,7 @@ def main() -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
 
         if missing_community:
-            print(
-                "ERROR: Enterprise download is not an exhaustive superset of the pinned official Community source. "
-                "Refresh the Enterprise source bundle and/or run lock-repos --refresh ./odoo, then retry.",
-                file=sys.stderr,
-            )
+            print(format_missing_community_error(report), file=sys.stderr)
             return 2
         if enterprise_drift and not args.allow_drift:
             print(format_drift_error(report), file=sys.stderr)
@@ -1327,7 +1477,7 @@ def main() -> int:
                 "WARNING: Enterprise source bundle drift accepted with --allow-drift.",
                 file=sys.stderr,
             )
-        if community_head and community_head != community_revision:
+        if community_head_mismatch:
             message = "Community worktree HEAD differs from repos.lock.yaml revision."
             if not args.allow_community_head_mismatch:
                 print(

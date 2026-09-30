@@ -97,16 +97,18 @@ page. Keep the header if the session setup changes.
 
 ### `odoo-enterprise-import`
 
-Inspects or imports an Odoo Enterprise source bundle or already extracted
-source directory against the exact Community checkout selected by
-`repos.lock.yaml`.
+Inspects, imports or extracts an Odoo Enterprise source bundle or already
+extracted source directory against a local Odoo Community checkout: the exact
+one selected by `repos.lock.yaml`, or, in extract mode without a lock, the
+checkout as it is.
 
-This tool is the Enterprise mirror import flow. It does not download from
-odoo.com. By default it is a dry-run and answers the question: "given this
-Enterprise payload and this pinned official Community source, which modules are
-Enterprise candidates and what would change in the private Enterprise Git
-repo?" With `--apply`, it writes those changes into a clean local Enterprise
-Git worktree.
+This tool serves the Enterprise mirror import flow and, with `--extract-to`,
+copies the Enterprise modules into a plain directory (extract mode, below). It
+does not download from odoo.com. By default it is a dry-run and answers the
+question: "given this Enterprise payload and this pinned official Community
+source, which modules are Enterprise candidates and what would change in the
+private Enterprise Git repo?" With `--apply`, it writes those changes into a
+clean local Enterprise Git worktree.
 
 Example:
 
@@ -143,15 +145,15 @@ Write them with `--report-json` to an operator workdir, task evidence folder, or
 other private audit location outside the Enterprise source repository. They must
 not store operator-local absolute paths such as laptop home directories,
 temporary directories, or case workdirs. Source arguments such as
-`--source-bundle`, `--download-src`, `--community-src`, and `--current-src` are
-represented by stable hashes, commits, placeholders, and module-relative paths
-instead.
+`--source-bundle`, `--download-src`, `--community-src`, `--current-src`, and
+`--extract-to` are represented by stable hashes, commits, placeholders, and
+module-relative paths instead.
 
 The command fails when the Enterprise payload is not an exhaustive superset of
-the pinned official Community source, or when the local Community checkout is
-not at the pinned revision. Matching module names whose Enterprise source bundle copy
-differs byte-for-byte from the pinned official Community source are reported as
-Enterprise source bundle drift.
+the Community source given with `--community-src`, or when that checkout is not
+at the revision pinned by `--repos-lock`. Matching module names whose
+Enterprise source bundle copy differs byte-for-byte from that Community source
+are reported as Enterprise source bundle drift.
 
 The normal safe Enterprise import workflow is to refresh the Community lock
 first:
@@ -227,10 +229,46 @@ Removals require the explicit `--apply-removals` flag. This prevents accidental
 deletion when a stale or incomplete Enterprise download is reviewed too quickly.
 The command refuses to apply if `--current-src` is not a clean Git worktree.
 
+Extract mode copies the Enterprise modules into a plain directory instead of a
+Git mirror, for example the Enterprise addons folder of a local development
+workspace. Each module becomes one directory directly inside the target, the
+layout of Odoo's `enterprise` Git repository:
+
+```bash
+tools/odoo-enterprise-import \
+  --source-bundle /path/to/odoo-enterprise-17.tar.gz \
+  --community-src /path/to/workspace/odoo \
+  --extract-to /path/to/workspace/addons/odoo-enterprise
+```
+
+The target must be missing or empty, and its parent an existing writable
+directory; this is checked before the classification starts. Extract mode never
+overwrites. Nothing is copied until the classification passes the same checks
+as apply mode: a download that is not a superset of the Community source fails,
+Enterprise source bundle drift fails unless `--allow-drift` is given, and with
+`--repos-lock` a Community checkout HEAD that differs from the locked revision
+fails unless `--allow-community-head-mismatch` is given. A download with no
+module outside the Community source fails as well: there is nothing to extract.
+
+The modules are first copied into a hidden staging directory next to the
+target, which is renamed onto the target once every copy succeeded. A failed
+extraction removes the staging directory, leaves the target exactly as it was,
+and ends with a one-line error.
+
+`--repos-lock` is optional in extract mode, and only there. Without it the
+Community checkout is used as it is: its HEAD is not compared with any locked
+revision, a warning in the human summary says so, and the report records
+`community_lock_revision` and `community_dest` as `null`. The report's `mode` is
+`extract`, and `extract_result.modules` lists the copied modules. `--extract-to`
+cannot be combined with `--apply`, `--apply-removals`, or `--current-src`, and
+without `--repos-lock` it cannot be combined with
+`--allow-community-head-mismatch` either.
+
 Enterprise source bundle drift requires the explicit `--allow-drift` flag. The
 importer is an Enterprise tool, so the short flag name is enough; the error text
 spells out that the drift is the source bundle's embedded Community copy differing
-from the freshly pinned official Odoo Community source.
+from the Community source: the freshly pinned official one with `--repos-lock`,
+the checkout as it is without it.
 
 When drift appears, the first response is to refresh Community and rerun. If
 drift remains, review the affected module as embedded-Community drift, not as a
