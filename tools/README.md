@@ -269,6 +269,14 @@ The download/acquisition step belongs in `odoo-enterprise-download`. Keep that
 step separate from Docker builds and from this classification/import
 validation.
 
+The tests of this program live in `tools/tests/`. They run from the repository
+root with the system Python and the `git` command; PyYAML is their only Python
+dependency beyond the standard library:
+
+```bash
+python3 -m unittest discover -s tools/tests
+```
+
 ### `update-base-image-digest`
 
 Updates the pinned digest in `images/runtime/Dockerfile` for the selected
