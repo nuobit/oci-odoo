@@ -88,6 +88,13 @@ Do not assume the source download is a ZIP. For `src_17e`, Odoo returned a
 gzip-compressed TAR source bundle in May 2026. The downloader validates the payload as
 a supported source bundle and records the detected type.
 
+The tool sends `Accept-Encoding: identity`. Since September 2026 the portal
+accepts but never answers a request whose `Accept-Encoding` is exactly
+`gzip, deflate`, the Python `requests` default: the warm-up GET hits the read
+timeout and nothing is checked or downloaded. Any other value is answered at
+once, and transfer compression buys nothing for a gzip TAR and one small HTML
+page. Keep the header if the session setup changes.
+
 ### `odoo-enterprise-import`
 
 Inspects or imports an Odoo Enterprise source bundle or already extracted
