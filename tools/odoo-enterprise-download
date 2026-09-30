@@ -385,7 +385,10 @@ def main() -> int:
         return 2
 
     session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
+    # Odoo's portal accepts but never answers a request whose Accept-Encoding is
+    # exactly "gzip, deflate", the requests default (observed 2026-09-30). The
+    # payloads are a gzip TAR and one small HTML page: identity costs nothing.
+    session.headers.update({"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
 
     try:
         warm_download_session(session, base_url, args.timeout)
