@@ -683,6 +683,10 @@ def update_source_bundle_readme(current_src: Path, identity: dict[str, Any]) -> 
             ]
         ),
     )
+    if sha is None:
+        # The new text differs from the stored one only in what Git converts on add:
+        # nothing to record, as when the text is unchanged.
+        return None
     return {
         "path": "README.md",
         "commit": sha,
@@ -1038,10 +1042,33 @@ def commit_body_for(report: dict[str, Any], detail: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def commit_path(current_src: Path, relative_path: Path, message: str, body: str) -> str:
+def git_has_staged_changes(path: Path, relative_path: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(path), "diff", "--cached", "--quiet", "--", relative_path],
+        check=False,
+    )
+    if result.returncode == 0:
+        staged = False
+    elif result.returncode == 1:
+        staged = True
+    else:
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+    return staged
+
+
+def commit_path(current_src: Path, relative_path: Path, message: str, body: str) -> str | None:
+    """Commit what `git add` stages under relative_path; None when it stages nothing.
+
+    The plan compares bytes and Git compares what it stores: a file whose only difference
+    is what Git converts on add (line endings under core.autocrlf) stages nothing.
+    """
     run_git(current_src, "add", "-A", "--", relative_path.as_posix())
-    run_git(current_src, "commit", "-q", "-m", message, "-m", body)
-    return run_git(current_src, "rev-parse", "HEAD", capture=True)
+    if git_has_staged_changes(current_src, relative_path.as_posix()):
+        run_git(current_src, "commit", "-q", "-m", message, "-m", body)
+        sha = run_git(current_src, "rev-parse", "HEAD", capture=True)
+    else:
+        sha = None
+    return sha
 
 
 def apply_import_plan(
@@ -1063,6 +1090,7 @@ def apply_import_plan(
 
     ensure_clean_git_worktree(current_src)
     applied: list[dict[str, Any]] = []
+    nothing_to_commit: list[dict[str, Any]] = []
     import_date = datetime.now(timezone.utc).date().isoformat()
     action_order = ("add", "update", "remove")
 
@@ -1084,18 +1112,28 @@ def apply_import_plan(
                 commit_message_for(action, module_name, import_date),
                 commit_body_for(report, detail),
             )
-            applied.append(
-                {
-                    "module": module_name,
-                    "action": action,
-                    "commit": sha,
-                    "path": relative_target.as_posix(),
-                }
-            )
+            if sha is not None:
+                applied.append(
+                    {
+                        "module": module_name,
+                        "action": action,
+                        "commit": sha,
+                        "path": relative_target.as_posix(),
+                    }
+                )
+            else:
+                nothing_to_commit.append(
+                    {
+                        "module": module_name,
+                        "action": action,
+                        "path": relative_target.as_posix(),
+                    }
+                )
             current_modules = collect_modules(current_src)
 
     report["apply_result"] = {
         "commits": applied,
+        "nothing_to_commit": nothing_to_commit,
     }
     if report.get("source_bundle_identity"):
         report["apply_result"]["readme_commit"] = update_source_bundle_readme(
@@ -1486,6 +1524,15 @@ def main() -> int:
                 )
                 return 4
             print(f"WARNING: {message}", file=sys.stderr)
+        if mode == "apply" and report["apply_result"]["nothing_to_commit"]:
+            unstored = report["apply_result"]["nothing_to_commit"]
+            print(
+                f"WARNING: Git staged nothing for {len(unstored)} planned module(s), so they have no commit: "
+                f"{', '.join(entry['module'] for entry in unstored)}. "
+                "Their files differ from the mirror only in what Git converts when it adds them, "
+                "such as line endings under core.autocrlf.",
+                file=sys.stderr,
+            )
         return 0
 
 
