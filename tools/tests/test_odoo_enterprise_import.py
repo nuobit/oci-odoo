@@ -246,6 +246,56 @@ class EnterpriseImportTest(unittest.TestCase):
         )
         self.assertEqual(git(mirror, "status", "--porcelain"), "")
 
+    def test_apply_makes_no_commit_for_a_module_whose_change_git_does_not_store(self):
+        mirror = self.make_mirror()
+        # The mirror already holds the bundle's web_studio, with LF line endings...
+        (mirror / "web_studio" / "models" / "__init__.py").write_text("# web_studio models\n", encoding="utf-8")
+        git_commit(mirror, "web_studio as in the bundle")
+        # ...the bundle has the same line with CRLF, and the operator's Git turns CRLF into LF on add.
+        (self.download / "odoo" / "addons" / "web_studio" / "models" / "__init__.py").write_bytes(
+            b"# web_studio models\r\n"
+        )
+        git(mirror, "config", "core.autocrlf", "input")
+        bundle = self.make_bundle()
+        lock = self.tmp / "repos.lock.yaml"
+        write_lock(lock, self.community_head)
+        report_path = self.tmp / "report.json"
+
+        result = self.run_tool(
+            "--source-bundle", str(bundle),
+            "--community-src", str(self.community),
+            "--repos-lock", str(lock),
+            "--current-src", str(mirror),
+            "--report-json", str(report_path),
+            "--apply",
+            "--apply-removals",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        subjects = git(mirror, "log", "--reverse", "--format=%s").splitlines()
+        self.assertEqual(len(subjects), 5)
+        self.assertEqual(subjects[1], "web_studio as in the bundle")
+        self.assertRegex(subjects[2], r"^\[ADD\] account_accountant: import from Odoo Enterprise \d{4}-\d{2}-\d{2}$")
+        self.assertRegex(subjects[3], r"^\[REM\] gone_module: remove from Odoo Enterprise \d{4}-\d{2}-\d{2}$")
+        self.assertEqual(subjects[4], "[DOC] README: update source bundle identity")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["import_plan"]["actions"]["update"], ["web_studio"])
+        self.assertEqual(
+            report["apply_result"]["nothing_to_commit"],
+            [{"module": "web_studio", "action": "update", "path": "web_studio"}],
+        )
+        self.assertEqual(
+            [commit["module"] for commit in report["apply_result"]["commits"]],
+            ["account_accountant", "gone_module"],
+        )
+        self.assertIn(
+            "WARNING: Git staged nothing for 1 planned module(s), so they have no commit: web_studio. "
+            "Their files differ from the mirror only in what Git converts when it adds them, "
+            "such as line endings under core.autocrlf.\n",
+            result.stderr,
+        )
+        self.assertEqual(git(mirror, "status", "--porcelain"), "")
+
     def test_apply_stops_before_any_commit_on_a_missing_community_module(self):
         mirror = self.make_mirror()
         mirror_head = git(mirror, "rev-parse", "HEAD")

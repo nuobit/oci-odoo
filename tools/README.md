@@ -202,12 +202,19 @@ tools/odoo-enterprise-import \
 
 Apply mode creates:
 
-- one commit per Enterprise module change, always.
+- one commit per Enterprise module change Git stores, always.
 - one README documentation commit when the source bundle identity block changes.
 
 The per-module rule applies to additions, updates, removals, and any future
 module-level import action. The Enterprise mirror tree is kept as source only:
 no import-report directory is committed inside it.
+
+The plan compares bytes, and Git compares what it stores. A module whose files
+differ from the mirror only in what Git converts when it adds them, such as
+CRLF line endings under the operator's `core.autocrlf=input`, stages nothing
+and gets no commit. The importer lists each such module in
+`apply_result.nothing_to_commit` and in a closing `WARNING:` line, so the
+commits made can be fewer than the plan's additions, updates and removals.
 
 When `--source-bundle` is used, apply mode also updates the Enterprise mirror
 README block delimited by:
